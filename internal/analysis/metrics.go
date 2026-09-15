@@ -370,7 +370,7 @@ func (m Metric) notes(c *Ctx, v Value) []string {
 		if !want[kind] {
 			continue
 		}
-		if len(out) >= 2 {
+		if len(out) >= 3 {
 			break
 		}
 		switch kind {
@@ -411,9 +411,11 @@ func (m Metric) notes(c *Ctx, v Value) []string {
 	return out
 }
 
+// trim печатает число так, как его читает человек: у крупных величин доли
+// не нужны, у мелких — единственное, что отличает одно значение от другого.
 func trim(f float64) string {
-	if f == float64(int(f)) {
-		return fmt.Sprintf("%d", int(f))
+	if f >= 10 || f <= -10 || f == float64(int(f)) {
+		return fmt.Sprintf("%.0f", f)
 	}
 	return fmt.Sprintf("%.1f", f)
 }
