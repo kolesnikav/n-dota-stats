@@ -80,10 +80,10 @@ func TestMetricsCoverEveryRole(t *testing.T) {
 	m, _ := fixture.Match8999344582()
 	analysis.DetectRoles(m, nil)
 	for role := dota.RoleCarry; role <= dota.RoleHard; role++ {
-		if len(analysis.MetricsFor(role, false)) == 0 {
+		if len(analysis.MetricsFor(role, 0, false)) == 0 {
 			t.Errorf("для роли %s не задано ни одного показателя", role)
 		}
-		if len(analysis.MetricsFor(role, true)) == 0 {
+		if len(analysis.MetricsFor(role, 0, true)) == 0 {
 			t.Errorf("для роли %s пустая короткая сводка", role)
 		}
 	}

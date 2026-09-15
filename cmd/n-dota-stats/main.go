@@ -29,6 +29,7 @@ func main() {
 		metaPath = flag.String("meta", "", "файл метаданных матча для --dry-run")
 		showMet  = flag.Bool("metrics", false, "напечатать набор показателей по ролям и выйти")
 		backfill = flag.Int("backfill", 0, "загрузить историю матчей за N дней и выйти")
+		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
 	)
 	flag.Parse()
 
@@ -51,6 +52,21 @@ func main() {
 	var source app.MatchSource = odota.NewSource(od)
 	if key := os.Getenv("STEAM_API_KEY"); key != "" {
 		source = valve.New(key)
+	}
+
+	if *audit {
+		if *account == 0 {
+			fmt.Fprintln(os.Stderr, "нужен --account")
+			os.Exit(1)
+		}
+		a := app.New(db, nil, odota.NewSource(od), od)
+		res, err := a.Audit(*account, 15)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
+		fmt.Print(app.AuditText(res))
+		return
 	}
 
 	if *backfill > 0 {
@@ -137,7 +153,7 @@ func printMetrics() {
 		analysis.CompareLaneOpponent:   "соперник по линии",
 	}
 	for role := dota.RoleCarry; role <= dota.RoleHard; role++ {
-		metrics := analysis.MetricsFor(role, false)
+		metrics := analysis.MetricsFor(role, 0, false)
 		fmt.Printf("\n%d · %s — показателей: %d\n", int(role), role, len(metrics))
 		for _, g := range append(append([]string{}, analysis.Groups...), "") {
 			for _, m := range metrics {
@@ -167,6 +183,18 @@ func printMetrics() {
 			}
 		}
 	}
+	fmt.Printf("\nПоказатели под конкретных героев\n")
+	for _, m := range analysis.Registry {
+		if !m.HeroSpecific() {
+			continue
+		}
+		heroes := make([]string, 0, len(m.Heroes))
+		for _, id := range m.Heroes {
+			heroes = append(heroes, dota.HeroName(id))
+		}
+		fmt.Printf("   %-9s %-32s %-11s %s\n", "герой", m.Label, needs[m.Needs], strings.Join(heroes, ", "))
+	}
+
 	fmt.Printf("\nВсего показателей в реестре: %d\n", len(analysis.Registry))
 }
 

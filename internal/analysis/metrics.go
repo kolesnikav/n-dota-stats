@@ -47,6 +47,7 @@ type Metric struct {
 	Key     string
 	Label   string
 	Roles   []dota.Role
+	Heroes  []int       // если задано — показывается только на этих героях
 	Short   bool        // попадает в короткую сводку
 	Needs   dota.Detail // какой уровень данных требуется
 	Group   string      // раздел сводки
@@ -65,6 +66,23 @@ func (m Metric) forRole(r dota.Role) bool {
 	}
 	return false
 }
+
+// forHero отвечает, показывать ли метрику на этом герое. Без списка героев
+// метрика общая и подходит всем.
+func (m Metric) forHero(heroID int) bool {
+	if len(m.Heroes) == 0 {
+		return true
+	}
+	for _, id := range m.Heroes {
+		if id == heroID {
+			return true
+		}
+	}
+	return false
+}
+
+// HeroSpecific сообщает, что показатель заведён под конкретных героев.
+func (m Metric) HeroSpecific() bool { return len(m.Heroes) > 0 }
 
 var all = []dota.Role{dota.RoleCarry, dota.RoleMid, dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}
 var cores = []dota.Role{dota.RoleCarry, dota.RoleMid, dota.RoleOfflane}
@@ -309,13 +327,35 @@ var Registry = []Metric{
 }
 
 // Groups — разделы сводки в порядке показа.
-var Groups = []string{"Линия", "Фарм", "Бой", "Карта"}
+var Groups = []string{"Линия", "Фарм", "Бой", "Карта", "Герой"}
 
-// MetricsFor возвращает показатели роли: сначала короткие, потом остальные.
-func MetricsFor(role dota.Role, short bool) []Metric {
+// skillshot строит показатель точности умения с наведением: сколько попаданий
+// по героям из скольких применений. Данные есть только в разобранном реплее.
+func skillshot(key, label string, heroID int, ability string) Metric {
+	return Metric{
+		Key: key, Group: "Герой", Label: label, Roles: all, Heroes: []int{heroID},
+		Needs: dota.DetailReplay, Unit: "%",
+		Compare: []CompareKind{CompareOwnHistory},
+		Calc: func(c *Ctx) (Value, bool) {
+			casts := c.Player.AbilityUses[ability]
+			if casts == 0 {
+				return none()
+			}
+			hits := c.Player.HeroHits[ability]
+			acc := float64(hits) / float64(casts) * 100
+			return Value{
+				Text: fmt.Sprintf("%d из %d (%.0f%%)", hits, casts, acc),
+				Num:  acc, Has: true,
+			}, true
+		},
+	}
+}
+
+// MetricsFor возвращает показатели роли для конкретного героя.
+func MetricsFor(role dota.Role, heroID int, short bool) []Metric {
 	out := make([]Metric, 0, len(Registry))
 	for _, m := range Registry {
-		if !m.forRole(role) {
+		if !m.forRole(role) || !m.forHero(heroID) {
 			continue
 		}
 		if short && !m.Short {
@@ -325,6 +365,15 @@ func MetricsFor(role dota.Role, short bool) []Metric {
 	}
 	return out
 }
+
+// heroMetrics — показатели под конкретных героев. Добавление нового героя
+// это одна строка: метрика сама решит, кому показываться.
+var heroMetrics = []Metric{
+	skillshot("mirana_arrow", "Стрелы", 9, "mirana_arrow"),
+	skillshot("pudge_hook", "Крюки", 14, "pudge_meat_hook"),
+}
+
+func init() { Registry = append(Registry, heroMetrics...) }
 
 func thousands(v int) string {
 	if v < 1000 {
@@ -487,7 +536,7 @@ func (m Metric) verdict(c *Ctx, v Value) int {
 func Build(m *dota.Match, p *dota.Player, hist History, short bool) []Line {
 	c := &Ctx{Match: m, Player: p, Opponent: LaneOpponent(m, p), History: hist}
 	var out []Line
-	for _, metric := range MetricsFor(p.Role, short) {
+	for _, metric := range MetricsFor(p.Role, p.HeroID, short) {
 		if metric.Needs > m.Detail {
 			continue
 		}

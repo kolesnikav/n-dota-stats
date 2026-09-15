@@ -155,6 +155,11 @@ type Player struct {
 	ItemUses        map[string]int
 	AbilityUpgrades []int
 
+	// AbilityUses — сколько раз способность применена, HeroHits — сколько раз
+	// попала по герою. Вместе дают точность умений с наведением.
+	AbilityUses map[string]int
+	HeroHits    map[string]int
+
 	// Перцентили относительно того же героя, 0..1. Заполняются из снимка
 	// benchmarks либо приходят готовыми из источника.
 	Benchmarks map[string]float64

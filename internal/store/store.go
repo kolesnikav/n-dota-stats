@@ -511,6 +511,43 @@ func (d *DB) UserMatches(accountID int64, limit int) ([]UserMatch, error) {
 	return out, rows.Err()
 }
 
+// HistoryRow — строка истории для проверки качества показателей.
+type HistoryRow struct {
+	MatchID int64
+	Role    int
+	Win     bool
+	Metrics string
+}
+
+// HistoryRows возвращает все матчи игрока с посчитанными показателями.
+func (d *DB) HistoryRows(accountID int64) ([]HistoryRow, error) {
+	rows, err := d.sql.Query(`
+		SELECT mu.match_id, COALESCE(mu.role,0), COALESCE(mu.metrics,'{}'),
+		       COALESCE(m.radiant_win,0), COALESCE(p.player_slot,-1)
+		FROM match_users mu
+		JOIN matches m ON m.match_id = mu.match_id
+		LEFT JOIN players p ON p.match_id = mu.match_id AND p.account_id = mu.account_id
+		WHERE mu.account_id = ?`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HistoryRow
+	for rows.Next() {
+		var h HistoryRow
+		var radiantWin, slot int
+		if err := rows.Scan(&h.MatchID, &h.Role, &h.Metrics, &radiantWin, &slot); err != nil {
+			return nil, err
+		}
+		if slot < 0 {
+			continue
+		}
+		h.Win = (slot < 128) == (radiantWin == 1)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 // MatchCount — сколько матчей пользователя в базе.
 func (d *DB) MatchCount(accountID int64) int {
 	var n int

@@ -261,6 +261,8 @@ type rawPlyer struct {
 	FirstPurchase   map[string]int `json:"first_purchase_time"`
 	ItemUses        map[string]int `json:"item_uses"`
 	AbilityUpgrades []int          `json:"ability_upgrades_arr"`
+	AbilityUses     map[string]int `json:"ability_uses"`
+	HeroHits        map[string]int `json:"hero_hits"`
 
 	Benchmarks map[string]struct {
 		Raw *float64 `json:"raw"`
@@ -316,6 +318,8 @@ func Decode(raw []byte) (*dota.Match, error) {
 			FirstPurchase:   rp.FirstPurchase,
 			ItemUses:        rp.ItemUses,
 			AbilityUpgrades: rp.AbilityUpgrades,
+			AbilityUses:     rp.AbilityUses,
+			HeroHits:        rp.HeroHits,
 		}
 		if rp.AccountID != nil {
 			p.AccountID = *rp.AccountID

@@ -47,7 +47,7 @@ func (a *App) Build(m *dota.Match, accountID int64) (*Report, error) {
 		Metric: map[string]float64{},
 	}
 	ctx := &analysis.Ctx{Match: m, Player: p, Opponent: analysis.LaneOpponent(m, p), History: a.DB}
-	for _, metric := range analysis.MetricsFor(p.Role, false) {
+	for _, metric := range analysis.MetricsFor(p.Role, p.HeroID, false) {
 		if metric.Needs > m.Detail {
 			continue
 		}
