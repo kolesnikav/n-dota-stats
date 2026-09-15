@@ -10,6 +10,7 @@ import (
 	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/app"
 	"github.com/kolesnikav/n-dota-stats/internal/benchmarks"
+	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
 	"github.com/kolesnikav/n-dota-stats/internal/odota"
@@ -25,8 +26,14 @@ func main() {
 		match    = flag.Int64("match", 0, "id матча для --dry-run")
 		dbPath   = flag.String("db", env("DB_PATH", "bot.db"), "путь к базе")
 		metaPath = flag.String("meta", "", "файл метаданных матча для --dry-run")
+		showMet  = flag.Bool("metrics", false, "напечатать набор показателей по ролям и выйти")
 	)
 	flag.Parse()
+
+	if *showMet {
+		printMetrics()
+		return
+	}
 
 	db, err := store.Open(*dbPath)
 	if err != nil {
@@ -70,6 +77,54 @@ func main() {
 		fmt.Fprintln(os.Stderr, "бот остановлен:", err)
 		os.Exit(1)
 	}
+}
+
+// printMetrics печатает реестр показателей: что показывается для каждой роли,
+// откуда берутся данные и с чем сравнивается значение.
+func printMetrics() {
+	needs := map[dota.Detail]string{
+		dota.DetailScoreboard: "таблица",
+		dota.DetailMeta:       "метаданные",
+		dota.DetailReplay:     "реплей",
+	}
+	compare := map[analysis.CompareKind]string{
+		analysis.CompareHeroPercentile: "перцентиль героя",
+		analysis.CompareRoleMedian:     "медиана роли",
+		analysis.CompareOwnHistory:     "своя история",
+		analysis.CompareLaneOpponent:   "соперник по линии",
+	}
+	for role := dota.RoleCarry; role <= dota.RoleHard; role++ {
+		metrics := analysis.MetricsFor(role, false)
+		fmt.Printf("\n%d · %s — показателей: %d\n", int(role), role, len(metrics))
+		for _, g := range append(append([]string{}, analysis.Groups...), "") {
+			for _, m := range metrics {
+				if m.Group != g {
+					continue
+				}
+				var bases []string
+				for _, k := range []analysis.CompareKind{
+					analysis.CompareRoleMedian, analysis.CompareOwnHistory,
+					analysis.CompareLaneOpponent, analysis.CompareHeroPercentile,
+				} {
+					for _, have := range m.Compare {
+						if have == k {
+							bases = append(bases, compare[k])
+						}
+					}
+				}
+				base := "—"
+				if len(bases) > 0 {
+					base = strings.Join(bases, ", ")
+				}
+				group := m.Group
+				if group == "" {
+					group = "прочее"
+				}
+				fmt.Printf("   %-9s %-32s %-11s %s\n", group, m.Label, needs[m.Needs], base)
+			}
+		}
+	}
+	fmt.Printf("\nВсего показателей в реестре: %d\n", len(analysis.Registry))
 }
 
 func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchID int64, metaPath string) error {
