@@ -188,8 +188,8 @@ func (a *App) refreshBenchmarks() {
 		ids = append(ids, id)
 	}
 	a.Log("обновляю снимок перцентилей по %d героям", len(ids))
-	benchmarks.Refresh(a.OD, a.DB, ids, a.Log)
-	a.Log("снимок перцентилей обновлён")
+	benchmarks.Refresh(a.OD, a.DB, ids, 2*time.Second, a.Log)
+	a.Log("снимок перцентилей обновлён: %d героев", a.DB.BenchmarksHeroCount())
 }
 
 func (a *App) handle(u telegram.Update) {

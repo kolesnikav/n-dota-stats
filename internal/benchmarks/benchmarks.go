@@ -112,12 +112,19 @@ type Saver interface {
 		Value      float64
 	}) error
 	BenchmarksFetchedAt() int64
+	BenchmarksHeroCount() int
 }
 
-// Refresh обновляет снимок по всем героям. Вызывается дважды в сутки:
-// ~126 запросов за проход при лимите 2000 в сутки.
-func Refresh(cli *odota.Client, db Saver, heroIDs []int, log func(string, ...any)) {
-	for _, id := range heroIDs {
+// Refresh обновляет снимок по всем героям.
+//
+// pause — дополнительная пауза между героями поверх троттлинга клиента. Это
+// фоновая задача, и она не должна занимать всю квоту: пользователь, который
+// прямо сейчас подключается или просит разбор матча, важнее снимка.
+func Refresh(cli *odota.Client, db Saver, heroIDs []int, pause time.Duration, log func(string, ...any)) {
+	for i, id := range heroIDs {
+		if i > 0 && pause > 0 {
+			time.Sleep(pause)
+		}
 		curves, err := cli.Benchmarks(id)
 		if err != nil {
 			log("бенчмарки героя %d: %v", id, err)
@@ -141,8 +148,12 @@ func Refresh(cli *odota.Client, db Saver, heroIDs []int, log func(string, ...any
 	}
 }
 
-// Stale сообщает, что снимок старше суток.
+// Stale сообщает, что снимок пора обновить: он старше суток или неполный
+// (прошлый проход мог оборваться на середине из-за ограничения частоты).
 func Stale(db Saver) bool {
 	at := db.BenchmarksFetchedAt()
-	return at == 0 || time.Since(time.Unix(at, 0)) > 24*time.Hour
+	if at == 0 || time.Since(time.Unix(at, 0)) > 24*time.Hour {
+		return true
+	}
+	return db.BenchmarksHeroCount() < 100
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,30 +18,53 @@ import (
 
 const base = "https://api.opendota.com/api"
 
-// Client — клиент OpenDota с троттлингом (без ключа лимит 60 запросов в минуту).
+// Client — клиент OpenDota с троттлингом и повтором при 429.
+//
+// Без ключа лимит — 60 запросов в минуту. Держать ровно эту частоту нельзя:
+// счётчик на их стороне скользящий, и любой лишний запрос (например, от
+// пользователя, который прямо сейчас подключается) приводит к 429 у всех.
+// Поэтому интервал с запасом, а на 429 — отход и повтор.
 type Client struct {
 	APIKey string
 	HTTP   *http.Client
+
+	// MinInterval — минимальный промежуток между запросами.
+	MinInterval time.Duration
 
 	mu   sync.Mutex
 	last time.Time
 }
 
 func New(apiKey string) *Client {
+	gap := 1600 * time.Millisecond // ~37 запросов в минуту, с запасом к лимиту
+	if apiKey != "" {
+		gap = 350 * time.Millisecond
+	}
 	return &Client{
-		APIKey: apiKey,
-		HTTP:   &http.Client{Timeout: 60 * time.Second},
+		APIKey:      apiKey,
+		HTTP:        &http.Client{Timeout: 60 * time.Second},
+		MinInterval: gap,
 	}
 }
 
 func (c *Client) throttle() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	const gap = 1100 * time.Millisecond
+	gap := c.MinInterval
+	if gap <= 0 {
+		gap = 1600 * time.Millisecond
+	}
 	if wait := gap - time.Since(c.last); wait > 0 {
 		time.Sleep(wait)
 	}
 	c.last = time.Now()
+}
+
+// TooManyRequests сообщает, что сервис ограничил частоту запросов.
+type TooManyRequests struct{ Path string }
+
+func (e *TooManyRequests) Error() string {
+	return "opendota " + e.Path + ": слишком часто (429)"
 }
 
 func (c *Client) get(path string, out any) error {
@@ -52,25 +76,49 @@ func (c *Client) get(path string, out any) error {
 		}
 		u += sep + "api_key=" + url.QueryEscape(c.APIKey)
 	}
-	c.throttle()
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return err
+	const attempts = 3
+	for attempt := 1; ; attempt++ {
+		c.throttle()
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("User-Agent", "n-dota-stats/1.0")
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			wait := retryAfter(resp.Header.Get("Retry-After"), attempt)
+			_ = resp.Body.Close()
+			if attempt >= attempts {
+				return &TooManyRequests{Path: path}
+			}
+			time.Sleep(wait)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return fmt.Errorf("opendota %s: код %d", path, resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(body, out)
 	}
-	req.Header.Set("User-Agent", "n-dota-stats/1.0")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
+}
+
+// retryAfter выбирает паузу перед повтором: слушаем заголовок сервиса, иначе
+// растём по степеням.
+func retryAfter(header string, attempt int) time.Duration {
+	if header != "" {
+		if sec, err := strconv.Atoi(header); err == nil && sec > 0 && sec < 120 {
+			return time.Duration(sec) * time.Second
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("opendota %s: код %d", path, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(body, out)
+	return time.Duration(attempt*attempt) * 3 * time.Second
 }
 
 func containsRune(s string, r rune) bool {

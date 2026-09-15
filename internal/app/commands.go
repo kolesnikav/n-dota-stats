@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/kolesnikav/n-dota-stats/internal/mvp"
+	"github.com/kolesnikav/n-dota-stats/internal/odota"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
 )
 
@@ -117,7 +119,12 @@ func (a *App) finishRegistration(chatID int64, text, name string) {
 		return
 	}
 	ids, err := a.Source.RecentMatchIDs(accountID)
-	if err != nil || len(ids) == 0 {
+	if err != nil {
+		a.Log("проверка аккаунта %d: %v", accountID, err)
+		_, _ = a.Bot.Send(chatID, busyText(err), nil)
+		return
+	}
+	if len(ids) == 0 {
 		_, _ = a.Bot.Send(chatID,
 			"Не вижу матчей этого аккаунта. Проверь ID и то, что история матчей открыта.", nil)
 		return
@@ -167,6 +174,17 @@ func (a *App) notifyAdmins(chatID, accountID int64, name string) {
 	}
 }
 
+// busyText объясняет отказ так, чтобы человек понял, что делать. Отдельно
+// разбираем ограничение частоты: это не его проблема и не повод править ID.
+func busyText(err error) string {
+	var limited *odota.TooManyRequests
+	if errors.As(err, &limited) {
+		return "Сервис статистики сейчас ограничивает частоту запросов. " +
+			"Подожди минуту и повтори — с твоим аккаунтом всё в порядке."
+	}
+	return "Источник данных не отвечает. Попробуй ещё раз через минуту."
+}
+
 func (a *App) cmdMe(chatID int64) {
 	u, ok := a.DB.User(chatID)
 	if !ok {
@@ -195,8 +213,13 @@ func (a *App) cmdLast(chatID int64) {
 		return
 	}
 	ids, err := a.Source.RecentMatchIDs(u.AccountID)
-	if err != nil || len(ids) == 0 {
-		_, _ = a.Bot.Send(chatID, "Не получил список матчей. Профиль открыт?", nil)
+	if err != nil {
+		a.Log("история матчей %d: %v", u.AccountID, err)
+		_, _ = a.Bot.Send(chatID, busyText(err), nil)
+		return
+	}
+	if len(ids) == 0 {
+		_, _ = a.Bot.Send(chatID, "Не вижу матчей. История матчей открыта?", nil)
 		return
 	}
 	if err := a.SendReport(chatID, u.AccountID, ids[0], true); err != nil {

@@ -578,6 +578,13 @@ func (d *DB) Curve(heroID int, metric string) ([][2]float64, error) {
 	return out, rows.Err()
 }
 
+// BenchmarksHeroCount — по скольким героям есть данные в снимке.
+func (d *DB) BenchmarksHeroCount() int {
+	var n int
+	_ = d.sql.QueryRow(`SELECT count(DISTINCT hero_id) FROM benchmarks`).Scan(&n)
+	return n
+}
+
 // BenchmarksFetchedAt — когда снимок обновлялся последний раз.
 func (d *DB) BenchmarksFetchedAt() int64 {
 	var t sql.NullInt64
