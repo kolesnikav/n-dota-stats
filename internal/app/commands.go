@@ -20,6 +20,7 @@ const helpText = `<b>Что я умею</b>
 /fit — пересчитать веса формулы по твоим исправлениям
 /weights — показать текущие веса
 /watch on|off — слежение за новыми матчами
+/backfill <i>дней</i> — загрузить историю матчей (по умолчанию год)
 /me — мои настройки
 /link — сменить привязанный аккаунт
 /forget — удалить мои данные
@@ -78,6 +79,8 @@ func (a *App) onCommand(chatID int64, text, name string) {
 		a.cmdWeights(chatID)
 	case "/watch":
 		a.cmdWatch(chatID, arg)
+	case "/backfill":
+		a.cmdBackfill(chatID, arg)
 	case "/forget":
 		_ = a.DB.DeleteUser(chatID)
 		_, _ = a.Bot.Send(chatID, "Удалил тебя и твою разметку. /start — начать заново.", nil)
@@ -367,6 +370,41 @@ func (a *App) cmdWatch(chatID int64, arg string) {
 		}
 		_, _ = a.Bot.Send(chatID, "Слежение сейчас <b>"+state+"</b>. Меняется: /watch on или /watch off", nil)
 	}
+}
+
+func (a *App) cmdBackfill(chatID int64, arg string) {
+	u, ok := a.DB.User(chatID)
+	if !ok {
+		_, _ = a.Bot.Send(chatID, "Сначала /start", nil)
+		return
+	}
+	days := 365
+	if arg != "" {
+		if n, err := strconv.Atoi(arg); err == nil && n > 0 && n <= 3650 {
+			days = n
+		}
+	}
+	statusID, _ := a.Bot.Send(chatID,
+		fmt.Sprintf("Загружаю историю за %d дней. Это займёт несколько минут — сводки по каждому матчу слать не буду.", days), nil)
+
+	go func() {
+		res, err := a.Backfill(chatID, u.AccountID, days, func(done, total int) {
+			if statusID > 0 {
+				_ = a.Bot.Edit(chatID, statusID,
+					fmt.Sprintf("Загружаю историю: <b>%d</b> из %d…", done, total), nil)
+			}
+		})
+		if err != nil {
+			a.Log("загрузка истории %d: %v", u.AccountID, err)
+			_, _ = a.Bot.Send(chatID, "Не смог загрузить историю: "+esc(err.Error()), nil)
+			return
+		}
+		if statusID > 0 {
+			_ = a.Bot.Edit(chatID, statusID, res.Text(), nil)
+		} else {
+			_, _ = a.Bot.Send(chatID, res.Text(), nil)
+		}
+	}()
 }
 
 func (a *App) cmdUsers(chatID int64) {

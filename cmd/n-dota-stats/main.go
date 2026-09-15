@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/app"
@@ -27,6 +28,7 @@ func main() {
 		dbPath   = flag.String("db", env("DB_PATH", "bot.db"), "путь к базе")
 		metaPath = flag.String("meta", "", "файл метаданных матча для --dry-run")
 		showMet  = flag.Bool("metrics", false, "напечатать набор показателей по ролям и выйти")
+		backfill = flag.Int("backfill", 0, "загрузить историю матчей за N дней и выйти")
 	)
 	flag.Parse()
 
@@ -49,6 +51,38 @@ func main() {
 	var source app.MatchSource = odota.NewSource(od)
 	if key := os.Getenv("STEAM_API_KEY"); key != "" {
 		source = valve.New(key)
+	}
+
+	if *backfill > 0 {
+		if *account == 0 {
+			fmt.Fprintln(os.Stderr, "нужен --account")
+			os.Exit(1)
+		}
+		src := odota.NewSource(od)
+		src.NoParseRequests = true
+		a := app.New(db, nil, src, od)
+		var u store.User
+		found := false
+		for _, candidate := range mustUsers(db) {
+			if candidate.AccountID == *account {
+				u, found = candidate, true
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "аккаунт %d не подключён к боту\n", *account)
+			os.Exit(1)
+		}
+		res, err := a.Backfill(u.ChatID, *account, *backfill, func(done, total int) {
+			fmt.Printf("  %d из %d\n", done, total)
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
+		fmt.Println()
+		fmt.Println(strip(res.Text()))
+		fmt.Printf("заняло: %s\n", res.Elapsed.Round(time.Second))
+		return
 	}
 
 	if *dryRun {
@@ -81,6 +115,15 @@ func main() {
 
 // printMetrics печатает реестр показателей: что показывается для каждой роли,
 // откуда берутся данные и с чем сравнивается значение.
+func mustUsers(db *store.DB) []store.User {
+	users, err := db.Users()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "пользователи:", err)
+		os.Exit(1)
+	}
+	return users
+}
+
 func printMetrics() {
 	needs := map[dota.Detail]string{
 		dota.DetailScoreboard: "таблица",

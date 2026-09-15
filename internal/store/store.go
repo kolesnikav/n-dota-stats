@@ -409,6 +409,14 @@ func (d *DB) LinkMatchUser(mu MatchUser, metrics map[string]float64) error {
 	return err
 }
 
+// HasMatchUser сообщает, связан ли матч с этим игроком.
+func (d *DB) HasMatchUser(matchID, accountID int64) bool {
+	var one int
+	err := d.sql.QueryRow(`SELECT 1 FROM match_users WHERE match_id=? AND account_id=?`,
+		matchID, accountID).Scan(&one)
+	return err == nil
+}
+
 // SetMessageID запоминает сообщение со сводкой, чтобы потом его дополнить.
 func (d *DB) SetMessageID(matchID, accountID, messageID int64) error {
 	_, err := d.sql.Exec(`UPDATE match_users SET message_id=? WHERE match_id=? AND account_id=?`,
