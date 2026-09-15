@@ -2,6 +2,8 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -143,6 +145,18 @@ func (a *App) Run() error {
 	if s := a.DB.Get("tg_offset"); s != "" {
 		_ = json.Unmarshal([]byte(s), &offset)
 	}
+	// Нумерация обновлений у каждого бота своя. Если подставить новый токен,
+	// а позицию оставить от старого, новый бот не увидит ни одного сообщения:
+	// его update_id заведомо меньше сохранённого. Поэтому при смене токена
+	// сбрасываем позицию. Сам токен не храним — только его отпечаток.
+	if fp := tokenFingerprint(a.Bot.Token); fp != "" {
+		if prev := a.DB.Get("tg_token"); prev != "" && prev != fp {
+			a.Log("токен бота сменился, сбрасываю позицию в очереди обновлений")
+			offset = 0
+		}
+		_ = a.DB.Put("tg_token", fp)
+	}
+
 	nextWatch := time.Now()
 	nextBench := time.Now()
 
@@ -171,6 +185,16 @@ func (a *App) Run() error {
 			a.handle(u)
 		}
 	}
+}
+
+// tokenFingerprint — короткий отпечаток токена. Нужен, чтобы замечать смену
+// бота, не сохраняя сам секрет в базу.
+func tokenFingerprint(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (a *App) refreshBenchmarks() {
