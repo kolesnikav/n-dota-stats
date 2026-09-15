@@ -49,6 +49,7 @@ type Metric struct {
 	Roles   []dota.Role
 	Short   bool        // попадает в короткую сводку
 	Needs   dota.Detail // какой уровень данных требуется
+	Unit    string      // единица измерения для пометок сравнения, например "%"
 	Bench   string      // ключ benchmarks для перцентиля
 	Compare []CompareKind
 	Calc    func(*Ctx) (Value, bool)
@@ -113,7 +114,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "lane_eff", Label: "Линия к 10:00", Roles: all, Short: true,
+		Key: "lane_eff", Label: "Линия к 10:00", Roles: all, Short: true, Unit: "%",
 		Compare: []CompareKind{CompareRoleMedian, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			pct := c.Player.LaneEfficiencyPct
@@ -150,7 +151,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "dmg_share", Label: "Доля урона команды", Roles: cores,
+		Key: "dmg_share", Label: "Доля урона команды", Roles: cores, Unit: "%",
 		Calc: func(c *Ctx) (Value, bool) {
 			var total int
 			for _, p := range c.Match.Team(c.Player.IsRadiant) {
@@ -178,7 +179,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "kill_part", Label: "Участие в убийствах команды", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer},
+		Key: "kill_part", Label: "Участие в убийствах команды", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer}, Unit: "%",
 		Calc: func(c *Ctx) (Value, bool) {
 			var teamKills int
 			for _, p := range c.Match.Team(c.Player.IsRadiant) {
@@ -213,7 +214,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "stuns", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard},
+		Key: "stuns", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с",
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.Stuns <= 0 {
@@ -223,7 +224,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "teamfight", Label: "Участие в файтах", Roles: all, Short: true,
+		Key: "teamfight", Label: "Участие в файтах", Roles: all, Short: true, Unit: "%",
 		Needs: dota.DetailReplay, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.TeamfightParticipation <= 0 {
@@ -363,14 +364,14 @@ func (m Metric) notes(c *Ctx, v Value) []string {
 			}
 		case CompareRoleMedian:
 			if med, ok := RoleMedian(c.Player.Role, m.Key); ok && v.Has {
-				out = append(out, fmt.Sprintf("медиана роли %s", trim(med)))
+				out = append(out, fmt.Sprintf("медиана роли %s%s", trim(med), m.Unit))
 			}
 		case CompareOwnHistory:
 			if c.History == nil || c.Player.AccountID == 0 || !v.Has {
 				continue
 			}
 			if avg, games, ok := c.History.Average(c.Player.AccountID, c.Player.Role, m.Key); ok && games >= 5 {
-				out = append(out, fmt.Sprintf("твоё среднее %s", trim(avg)))
+				out = append(out, fmt.Sprintf("твоё среднее %s%s", trim(avg), m.Unit))
 			}
 		case CompareLaneOpponent:
 			if c.Opponent == nil || !v.Has {
