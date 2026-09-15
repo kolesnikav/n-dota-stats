@@ -23,7 +23,6 @@ type Report struct {
 	Player *dota.Player
 	Ranked []mvp.Scored
 	Place  int
-	Short  []analysis.Line
 	Full   []analysis.Line
 	Metric map[string]float64 // числовые значения показателей для истории
 }
@@ -44,7 +43,6 @@ func (a *App) Build(m *dota.Match, accountID int64) (*Report, error) {
 		Player: p,
 		Ranked: ranked,
 		Place:  mvp.Place(ranked, p),
-		Short:  analysis.Build(m, p, a.DB, true),
 		Full:   analysis.Build(m, p, a.DB, false),
 		Metric: map[string]float64{},
 	}
@@ -62,28 +60,67 @@ func (a *App) Build(m *dota.Match, accountID int64) (*Report, error) {
 
 func (r *Report) header() []string {
 	m, p := r.Match, r.Player
-	outcome := "поражение"
+	outcome := "Поражение"
 	if p.Win {
-		outcome = "победа"
+		outcome = "Победа"
 	}
-	head := []string{
-		fmt.Sprintf("<b>Матч %d</b> · %s · %s", m.ID, clock(m.Duration), outcome),
-	}
-	roleNote := "роль посчитана"
-	if p.RoleSource == dota.SourceManual {
-		roleNote = "роль указана тобой"
-	}
-	line := fmt.Sprintf("%s · <b>%s</b> · %d/%d/%d",
+	line := fmt.Sprintf("<b>%s</b> · %s", outcome, clock(m.Duration))
+	head := []string{line}
+
+	second := fmt.Sprintf("%s · %s · %d/%d/%d",
 		esc(p.Name()), esc(p.Role.String()), p.Kills, p.Deaths, p.Assists)
 	if medal := dota.RankTierName(p.RankTier); medal != "" {
-		line += " · " + medal
+		second += " · " + medal
 	}
-	head = append(head, line, "<i>"+roleNote+"</i>")
-	return head
+	return append(head, second)
+}
+
+// marker показывает одним знаком, хорошо это или плохо.
+func marker(verdict int) string {
+	switch verdict {
+	case analysis.VerdictGood:
+		return "▲"
+	case analysis.VerdictBad:
+		return "▼"
+	case analysis.VerdictEven:
+		return "▪"
+	default:
+		return "·"
+	}
+}
+
+func (r *Report) body() []string {
+	byGroup := map[string][]analysis.Line{}
+	for _, l := range r.Full {
+		g := l.Group
+		if g == "" {
+			g = "Прочее"
+		}
+		byGroup[g] = append(byGroup[g], l)
+	}
+	order := append([]string(nil), analysis.Groups...)
+	order = append(order, "Прочее")
+
+	var out []string
+	for _, g := range order {
+		lines := byGroup[g]
+		if len(lines) == 0 {
+			continue
+		}
+		out = append(out, "", "<b>"+strings.ToUpper(g)+"</b>")
+		for _, l := range lines {
+			row := fmt.Sprintf("%s %s — <b>%s</b>", marker(l.Verdict), esc(l.Label), esc(l.Value))
+			if len(l.Notes) > 0 {
+				row += " <i>· " + esc(strings.Join(l.Notes, " · ")) + "</i>"
+			}
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 func (r *Report) top3() []string {
-	out := []string{"", "<b>Мой топ-3</b>"}
+	out := []string{"", "<b>ЛУЧШИЕ ПО МОЕЙ ФОРМУЛЕ</b>"}
 	for i, s := range r.Ranked {
 		if i >= 3 {
 			break
@@ -92,7 +129,7 @@ func (r *Report) top3() []string {
 		if s.Player == r.Player {
 			mark = " ← ты"
 		}
-		out = append(out, fmt.Sprintf("%d. %s (%s) — %.1f%s",
+		out = append(out, fmt.Sprintf("%d. %s · %s · %.0f%s",
 			i+1, esc(s.Player.Name()), s.Player.SideName(), s.Score*100, mark))
 	}
 	if r.Place > 3 {
@@ -101,40 +138,32 @@ func (r *Report) top3() []string {
 	return out
 }
 
-// Text собирает текст сводки: короткую или полную.
-func (r *Report) Text(full bool) string {
-	lines := r.header()
-	lines = append(lines, "")
-	src := r.Short
-	if full {
-		src = r.Full
+func (r *Report) footer() []string {
+	roleNote := "роль посчитана"
+	if r.Player.RoleSource == dota.SourceManual {
+		roleNote = "роль указана тобой"
 	}
-	if len(src) == 0 {
-		lines = append(lines, "<i>Показателей для этой роли пока нет.</i>")
-	}
-	for _, l := range src {
-		text := fmt.Sprintf("%s: <b>%s</b>", esc(l.Label), esc(l.Value))
-		if len(l.Notes) > 0 {
-			text += " <i>· " + esc(strings.Join(l.Notes, " · ")) + "</i>"
-		}
-		lines = append(lines, text)
-	}
-	lines = append(lines, r.top3()...)
+	tail := fmt.Sprintf("<i>Матч %d · %s</i>", r.Match.ID, roleNote)
 	if r.Match.Detail < dota.DetailMeta {
-		lines = append(lines, "", "<i>Реплей ещё не разобран — часть показателей появится позже.</i>")
+		tail += "\n<i>Реплей ещё не разобран — часть строк появится позже.</i>"
 	}
+	return []string{"", tail}
+}
+
+// Text собирает всю сводку целиком: без кнопки «подробнее», всё сразу.
+func (r *Report) Text() string {
+	lines := r.header()
+	lines = append(lines, r.body()...)
+	lines = append(lines, r.top3()...)
+	lines = append(lines, r.footer()...)
 	return strings.Join(lines, "\n")
 }
 
 // Keyboard — кнопки под сводкой.
-func (r *Report) Keyboard(full bool) telegram.Keyboard {
+func (r *Report) Keyboard() telegram.Keyboard {
 	id := strconv.FormatInt(r.Match.ID, 10)
-	toggle := telegram.Button{Text: "подробнее", Data: "d:" + id}
-	if full {
-		toggle = telegram.Button{Text: "свернуть", Data: "s:" + id}
-	}
 	return telegram.Keyboard{
-		{toggle, {Text: "сменить роль", Data: "r:" + id}},
+		{{Text: "сменить роль", Data: "r:" + id}},
 	}
 }
 

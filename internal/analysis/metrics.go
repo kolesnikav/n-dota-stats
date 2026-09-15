@@ -49,6 +49,8 @@ type Metric struct {
 	Roles   []dota.Role
 	Short   bool        // попадает в короткую сводку
 	Needs   dota.Detail // какой уровень данных требуется
+	Group   string      // раздел сводки
+	Lower   bool        // меньше значит лучше
 	Unit    string      // единица измерения для пометок сравнения, например "%"
 	Bench   string      // ключ benchmarks для перцентиля
 	Compare []CompareKind
@@ -71,17 +73,17 @@ var supports = []dota.Role{dota.RoleRoamer, dota.RoleHard}
 // Registry — все показатели. Добавление нового — одна запись здесь.
 var Registry = []Metric{
 	{
-		Key: "gpm", Label: "GPM", Roles: all, Short: true,
+		Key: "gpm", Group: "Фарм", Label: "GPM", Roles: all, Short: true,
 		Bench: "gold_per_min", Compare: []CompareKind{CompareHeroPercentile, CompareRoleMedian, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) { return num(float64(c.Player.GPM), "%d", c.Player.GPM) },
 	},
 	{
-		Key: "xpm", Label: "XPM", Roles: all,
+		Key: "xpm", Group: "Фарм", Label: "XPM", Roles: all,
 		Bench: "xp_per_min", Compare: []CompareKind{CompareHeroPercentile, CompareRoleMedian},
 		Calc: func(c *Ctx) (Value, bool) { return num(float64(c.Player.XPM), "%d", c.Player.XPM) },
 	},
 	{
-		Key: "lh10", Label: "Добивания к 10:00", Roles: cores, Short: true,
+		Key: "lh10", Group: "Линия", Label: "Добивания к 10:00", Roles: cores, Short: true,
 		Compare: []CompareKind{CompareRoleMedian, CompareOwnHistory, CompareLaneOpponent},
 		Calc: func(c *Ctx) (Value, bool) {
 			v, ok := dota.At(c.Player.LHT, 10)
@@ -92,7 +94,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "lh20", Label: "Добивания к 20:00", Roles: []dota.Role{dota.RoleCarry},
+		Key: "lh20", Group: "Линия", Label: "Добивания к 20:00", Roles: []dota.Role{dota.RoleCarry},
 		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			v, ok := dota.At(c.Player.LHT, 20)
@@ -103,7 +105,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "xp10", Label: "Опыт к 10:00", Roles: []dota.Role{dota.RoleMid}, Short: true,
+		Key: "xp10", Group: "Линия", Label: "Опыт к 10:00", Roles: []dota.Role{dota.RoleMid}, Short: true,
 		Compare: []CompareKind{CompareRoleMedian, CompareLaneOpponent},
 		Calc: func(c *Ctx) (Value, bool) {
 			v, ok := dota.At(c.Player.XPT, 10)
@@ -114,7 +116,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "lane_eff", Label: "Линия к 10:00", Roles: all, Short: true, Unit: "%",
+		Key: "lane_eff", Group: "Линия", Label: "Линия к 10:00", Roles: all, Short: true, Unit: "%",
 		Compare: []CompareKind{CompareRoleMedian, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			pct := c.Player.LaneEfficiencyPct
@@ -130,7 +132,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "nw_gap", Label: "Нетворс против вражеского керри", Roles: []dota.Role{dota.RoleCarry}, Short: true,
+		Key: "nw_gap", Group: "Линия", Label: "Нетворс против вражеского керри", Roles: []dota.Role{dota.RoleCarry}, Short: true,
 		Calc: func(c *Ctx) (Value, bool) {
 			var enemy *dota.Player
 			for _, o := range c.Match.Opponents(c.Player) {
@@ -151,7 +153,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "dmg_share", Label: "Доля урона команды", Roles: cores, Unit: "%",
+		Key: "dmg_share", Group: "Бой", Label: "Доля урона команды", Roles: cores, Unit: "%",
 		Calc: func(c *Ctx) (Value, bool) {
 			var total int
 			for _, p := range c.Match.Team(c.Player.IsRadiant) {
@@ -165,21 +167,21 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "hero_damage", Label: "Урон по героям", Roles: all,
+		Key: "hero_damage", Group: "Бой", Label: "Урон по героям", Roles: all,
 		Bench: "hero_damage_per_min", Compare: []CompareKind{CompareHeroPercentile},
 		Calc: func(c *Ctx) (Value, bool) {
 			return num(float64(c.Player.HeroDamage), "%s", thousands(c.Player.HeroDamage))
 		},
 	},
 	{
-		Key: "tower_damage", Label: "Урон по строениям", Roles: []dota.Role{dota.RoleCarry, dota.RoleOfflane},
+		Key: "tower_damage", Group: "Карта", Label: "Урон по строениям", Roles: []dota.Role{dota.RoleCarry, dota.RoleOfflane},
 		Bench: "tower_damage", Compare: []CompareKind{CompareHeroPercentile, CompareRoleMedian},
 		Calc: func(c *Ctx) (Value, bool) {
 			return num(float64(c.Player.TowerDamage), "%s", thousands(c.Player.TowerDamage))
 		},
 	},
 	{
-		Key: "kill_part", Label: "Участие в убийствах команды", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer}, Unit: "%",
+		Key: "kill_part", Group: "Бой", Label: "Участие в убийствах команды", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer}, Unit: "%",
 		Calc: func(c *Ctx) (Value, bool) {
 			var teamKills int
 			for _, p := range c.Match.Team(c.Player.IsRadiant) {
@@ -193,7 +195,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "wards", Label: "Варды", Roles: supports, Short: true,
+		Key: "wards", Group: "Карта", Label: "Варды", Roles: supports, Short: true,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareRoleMedian, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.ObsPlaced == 0 && c.Player.SenPlaced == 0 {
@@ -207,24 +209,24 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "stacks", Label: "Стаки", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Short: true,
+		Key: "stacks", Group: "Карта", Label: "Стаки", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Short: true,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareRoleMedian, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			return num(float64(c.Player.CampsStacked), "%d", c.Player.CampsStacked)
 		},
 	},
 	{
-		Key: "stuns", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с",
+		Key: "stuns", Group: "Бой", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с",
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.Stuns <= 0 {
 				return none()
 			}
-			return num(c.Player.Stuns, "%.0f", c.Player.Stuns)
+			return num(c.Player.Stuns, "%.0f с", c.Player.Stuns)
 		},
 	},
 	{
-		Key: "teamfight", Label: "Участие в файтах", Roles: all, Short: true, Unit: "%",
+		Key: "teamfight", Group: "Бой", Label: "Участие в файтах", Roles: all, Short: true, Unit: "%",
 		Needs: dota.DetailReplay, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.TeamfightParticipation <= 0 {
@@ -235,14 +237,14 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "runes", Label: "Собрано рун", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer},
+		Key: "runes", Group: "Карта", Label: "Собрано рун", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer},
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			return num(float64(c.Player.RunePickups), "%d", c.Player.RunePickups)
 		},
 	},
 	{
-		Key: "neutrals", Label: "Нейтралы", Roles: []dota.Role{dota.RoleCarry, dota.RoleOfflane},
+		Key: "neutrals", Group: "Фарм", Label: "Нейтралы", Roles: []dota.Role{dota.RoleCarry, dota.RoleOfflane},
 		Needs: dota.DetailMeta,
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.NeutralKills == 0 {
@@ -252,7 +254,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "healing", Label: "Лечение", Roles: supports,
+		Key: "healing", Group: "Бой", Label: "Лечение", Roles: supports,
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.HeroHealing == 0 {
 				return none()
@@ -261,7 +263,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "buybacks", Label: "Байбэки", Roles: all,
+		Key: "buybacks", Group: "Бой", Label: "Байбэки", Roles: all,
 		Needs: dota.DetailMeta,
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.Buybacks == 0 {
@@ -271,7 +273,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "tp", Label: "Использовано TP", Roles: supports,
+		Key: "tp", Group: "Карта", Label: "Использовано TP", Roles: supports,
 		Needs: dota.DetailMeta,
 		Calc: func(c *Ctx) (Value, bool) {
 			n := c.Player.ItemUses["tpscroll"]
@@ -282,7 +284,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "boots", Label: "Ботинки куплены", Roles: all,
+		Key: "boots", Group: "Карта", Label: "Ботинки куплены", Roles: all,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			best := -1
@@ -298,13 +300,16 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "deaths", Label: "Смерти", Roles: all,
+		Key: "deaths", Group: "Бой", Label: "Смерти", Roles: all, Lower: true,
 		Bench: "deaths_per_min", Compare: []CompareKind{CompareHeroPercentile, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			return num(float64(c.Player.Deaths), "%d", c.Player.Deaths)
 		},
 	},
 }
+
+// Groups — разделы сводки в порядке показа.
+var Groups = []string{"Линия", "Фарм", "Бой", "Карта"}
 
 // MetricsFor возвращает показатели роли: сначала короткие, потом остальные.
 func MetricsFor(role dota.Role, short bool) []Metric {
@@ -351,20 +356,40 @@ func LaneOpponent(m *dota.Match, p *dota.Player) *dota.Player {
 }
 
 // notes строит пометки сравнения после значения показателя.
+//
+// Порядок намеренный: медиана роли понятнее перцентиля, своя история важнее
+// чужого перцентиля. Больше двух пометок строка не держит — становится нечитаемой.
 func (m Metric) notes(c *Ctx, v Value) []string {
+	order := []CompareKind{CompareRoleMedian, CompareOwnHistory, CompareLaneOpponent, CompareHeroPercentile}
+	want := map[CompareKind]bool{}
+	for _, k := range m.Compare {
+		want[k] = true
+	}
 	var out []string
-	for _, kind := range m.Compare {
+	for _, kind := range order {
+		if !want[kind] {
+			continue
+		}
+		if len(out) >= 2 {
+			break
+		}
 		switch kind {
 		case CompareHeroPercentile:
 			if m.Bench == "" {
 				continue
 			}
 			if pct, ok := c.Player.Benchmarks[m.Bench]; ok {
-				out = append(out, fmt.Sprintf("%d-й перцентиль", int(pct*100+0.5)))
+				// Перцентиль везде читается одинаково: «лучше стольких-то
+				// процентов игроков на этом герое». Для смертей это значит
+				// перевернуть шкалу, иначе высокая цифра выглядела бы похвалой.
+				if m.Lower {
+					pct = 1 - pct
+				}
+				out = append(out, fmt.Sprintf("лучше %d%% на герое", int(pct*100+0.5)))
 			}
 		case CompareRoleMedian:
 			if med, ok := RoleMedian(c.Player.Role, m.Key); ok && v.Has {
-				out = append(out, fmt.Sprintf("медиана роли %s%s", trim(med), m.Unit))
+				out = append(out, fmt.Sprintf("медиана %s%s", trim(med), m.Unit))
 			}
 		case CompareOwnHistory:
 			if c.History == nil || c.Player.AccountID == 0 || !v.Has {
@@ -393,11 +418,21 @@ func trim(f float64) string {
 	return fmt.Sprintf("%.1f", f)
 }
 
+// Вердикт по показателю — чтобы глаз цеплялся за проблемные строки.
+const (
+	VerdictNone = 0 // сравнивать не с чем
+	VerdictGood = 1 // заметно лучше базы
+	VerdictEven = 2 // примерно на уровне
+	VerdictBad  = 3 // заметно хуже базы
+)
+
 // Line — готовая строка сводки.
 type Line struct {
-	Label string
-	Value string
-	Notes []string
+	Group   string
+	Label   string
+	Value   string
+	Notes   []string
+	Verdict int
 }
 
 func (l Line) String() string {
@@ -406,6 +441,44 @@ func (l Line) String() string {
 		s += " · " + strings.Join(l.Notes, " · ")
 	}
 	return s
+}
+
+// verdict сравнивает значение с медианой роли, а если её нет — с перцентилем
+// по герою. Порог в 15% выбран так, чтобы обычный разброс не подсвечивался.
+func (m Metric) verdict(c *Ctx, v Value) int {
+	if !v.Has {
+		return VerdictNone
+	}
+	if med, ok := RoleMedian(c.Player.Role, m.Key); ok && med > 0 {
+		ratio := v.Num / med
+		if m.Lower {
+			ratio = med / max(v.Num, 0.01)
+		}
+		switch {
+		case ratio >= 1.15:
+			return VerdictGood
+		case ratio <= 0.85:
+			return VerdictBad
+		default:
+			return VerdictEven
+		}
+	}
+	if m.Bench != "" {
+		if pct, ok := c.Player.Benchmarks[m.Bench]; ok {
+			if m.Lower {
+				pct = 1 - pct
+			}
+			switch {
+			case pct >= 0.65:
+				return VerdictGood
+			case pct <= 0.35:
+				return VerdictBad
+			default:
+				return VerdictEven
+			}
+		}
+	}
+	return VerdictNone
 }
 
 // Build считает показатели роли игрока и возвращает готовые строки.
@@ -420,7 +493,13 @@ func Build(m *dota.Match, p *dota.Player, hist History, short bool) []Line {
 		if !ok || v.Text == "" {
 			continue
 		}
-		out = append(out, Line{Label: metric.Label, Value: v.Text, Notes: metric.notes(c, v)})
+		out = append(out, Line{
+			Group:   metric.Group,
+			Label:   metric.Label,
+			Value:   v.Text,
+			Notes:   metric.notes(c, v),
+			Verdict: metric.verdict(c, v),
+		})
 	}
 	return out
 }

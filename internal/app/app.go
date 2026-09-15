@@ -128,7 +128,7 @@ func (a *App) SendReport(chatID, accountID, matchID int64, askMVP bool) error {
 	if err != nil {
 		return err
 	}
-	msgID, err := a.Bot.Send(chatID, rep.Text(false), rep.Keyboard(false))
+	msgID, err := a.Bot.Send(chatID, rep.Text(), rep.Keyboard())
 	if err != nil {
 		return err
 	}

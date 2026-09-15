@@ -104,7 +104,7 @@ func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchI
 	if err != nil {
 		return err
 	}
-	fmt.Println(strip(rep.Text(true)))
+	fmt.Println(strip(rep.Text()))
 	fmt.Println()
 	fmt.Println("Полный рейтинг:")
 	for i, s := range rep.Ranked {

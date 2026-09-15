@@ -27,8 +27,6 @@ func (a *App) onCallback(u telegram.Update) {
 	}
 
 	switch parts[0] {
-	case "d", "s": // подробнее / свернуть
-		a.toggleDetail(chatID, msgID, parts[1], parts[0] == "d")
 	case "r": // роль
 		a.roleCallback(chatID, msgID, parts)
 	case "m": // разметка MVP
@@ -39,22 +37,6 @@ func (a *App) onCallback(u telegram.Update) {
 }
 
 func (a *App) userFor(chatID int64) (store.User, bool) { return a.DB.User(chatID) }
-
-func (a *App) toggleDetail(chatID, msgID int64, matchArg string, full bool) {
-	u, ok := a.userFor(chatID)
-	if !ok {
-		return
-	}
-	matchID, err := strconv.ParseInt(matchArg, 10, 64)
-	if err != nil {
-		return
-	}
-	rep, err := a.Report(chatID, u.AccountID, matchID)
-	if err != nil {
-		return
-	}
-	_ = a.Bot.Edit(chatID, msgID, rep.Text(full), rep.Keyboard(full))
-}
 
 func (a *App) roleCallback(chatID, msgID int64, parts []string) {
 	u, ok := a.userFor(chatID)
@@ -94,7 +76,7 @@ func (a *App) roleCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	_ = a.Bot.Edit(chatID, msgID, rep.Text(false), rep.Keyboard(false))
+	_ = a.Bot.Edit(chatID, msgID, rep.Text(), rep.Keyboard())
 }
 
 func (a *App) markCallback(chatID, msgID int64, parts []string) {
