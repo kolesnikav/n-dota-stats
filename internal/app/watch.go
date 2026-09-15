@@ -7,11 +7,36 @@ import (
 )
 
 const (
-	watchInterval = 15 * time.Minute
-	idleAfter     = 3 * time.Hour // если давно не играл — опрашиваем реже
-	idleInterval  = 60 * time.Minute
-	gcDailyLimit  = 80 // запас к сотне заявок, о которой пишет OpenDota
+	// tickInterval — как часто просыпается наблюдатель. Реальная частота
+	// опроса каждого игрока считается отдельно, см. pollEvery.
+	tickInterval = 30 * time.Second
+
+	// activeWindow — сколько времени после последнего матча игрок считается
+	// играющим. В это окно опрашиваем часто: сводка нужна сразу после игры,
+	// а не через час.
+	activeWindow = 4 * time.Hour
+
+	activePoll = 90 * time.Second // играет прямо сейчас
+	idlePoll   = 10 * time.Minute // давно не играл
+
+	// У OpenDota лимит 60 запросов в минуту на всех, поэтому с ней опрашиваем
+	// вдвое реже. Steam Web API даёт 100 000 в сутки — там можно чаще.
+	slowSourceFactor = 2
+
+	gcDailyLimit = 80 // запас к сотне заявок, о которой пишет OpenDota
 )
+
+// pollEvery — как часто опрашивать этого игрока.
+func (a *App) pollEvery(lastMatch time.Time) time.Duration {
+	every := idlePoll
+	if time.Since(lastMatch) < activeWindow {
+		every = activePoll
+	}
+	if a.Source.Name() != "Steam Web API" {
+		every *= slowSourceFactor
+	}
+	return every
+}
 
 // watchTick опрашивает пользователей и рассылает сводки по новым матчам.
 //
@@ -29,16 +54,21 @@ func (a *App) watchTick() {
 		if !u.Watch || u.Status == store.StatusBlocked || u.Status == store.StatusPending {
 			continue
 		}
-		// Тех, кто давно не играл, опрашиваем реже: обычный интервал 15 минут,
-		// после трёх часов затишья — раз в час.
-		if u.LastPoll > 0 {
-			idle := now.Sub(time.Unix(u.LastPoll, 0))
-			if idle > idleAfter && idle < idleInterval {
-				continue
-			}
+		every := a.pollEvery(a.lastMatchTime(u.AccountID))
+		if u.LastPoll > 0 && now.Sub(time.Unix(u.LastPoll, 0)) < every {
+			continue
 		}
 		a.pollUser(u)
 	}
+}
+
+// lastMatchTime — когда игрок в последний раз заканчивал матч.
+func (a *App) lastMatchTime(accountID int64) time.Time {
+	matches, err := a.DB.UserMatches(accountID, 1)
+	if err != nil || len(matches) == 0 {
+		return time.Time{}
+	}
+	return time.Unix(matches[0].StartTime, 0)
 }
 
 func (a *App) pollUser(u store.User) {

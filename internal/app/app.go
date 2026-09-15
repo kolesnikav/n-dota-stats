@@ -171,7 +171,7 @@ func (a *App) Run() error {
 	for {
 		now := time.Now()
 		if now.After(nextWatch) {
-			nextWatch = now.Add(watchInterval)
+			nextWatch = now.Add(tickInterval)
 			a.watchTick()
 			a.metaTick()
 		}
