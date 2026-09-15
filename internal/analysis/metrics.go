@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
@@ -424,7 +425,28 @@ var Registry = []Metric{
 }
 
 // Groups — разделы сводки в порядке показа.
-var Groups = []string{"Линия", "Фарм", "Бой", "Карта"}
+var Groups = []string{"Главное", "Линия", "Фарм", "Бой", "Карта"}
+
+// Priority — показатели, которые для роли выносятся наверх, в раздел
+// «Главное», в указанном порядке.
+//
+// Список не выдуман: он ведётся по результатам --audit, то есть по тому, что
+// на накопленной истории действительно различает победы и поражения и при этом
+// остаётся рычагом, а не следствием результата. На оффлейне это стаки (0.3
+// против 0.1) и секунды контроля (115 против 38 — разница втрое).
+var Priority = map[dota.Role][]string{
+	dota.RoleOfflane: {"stacks", "stuns"},
+}
+
+// priorityIndex возвращает место показателя в списке решающих для роли.
+func priorityIndex(role dota.Role, key string) (int, bool) {
+	for i, k := range Priority[role] {
+		if k == key {
+			return i, true
+		}
+	}
+	return 0, false
+}
 
 // skillshot строит показатель точности умения с наведением: сколько попаданий
 // по героям из скольких применений. Данные есть только в разобранном реплее.
@@ -679,9 +701,15 @@ func (m Metric) verdict(c *Ctx, v Value) int {
 }
 
 // Build считает показатели роли игрока и возвращает готовые строки.
+// Решающие для роли показатели переносятся в раздел «Главное» и идут первыми.
 func Build(m *dota.Match, p *dota.Player, hist History, short bool) []Line {
 	c := &Ctx{Match: m, Player: p, Opponent: LaneOpponent(m, p), History: hist}
 	var out []Line
+	type ranked struct {
+		idx  int
+		line Line
+	}
+	var top []ranked
 	for _, metric := range MetricsFor(p.Role, p.HeroID, short) {
 		if metric.Needs > m.Detail {
 			continue
@@ -690,13 +718,24 @@ func Build(m *dota.Match, p *dota.Player, hist History, short bool) []Line {
 		if !ok || v.Text == "" {
 			continue
 		}
-		out = append(out, Line{
+		line := Line{
 			Group:   metric.GroupFor(p),
 			Label:   metric.Label,
 			Value:   v.Text,
 			Notes:   metric.notes(c, v),
 			Verdict: metric.verdict(c, v),
-		})
+		}
+		if idx, ok := priorityIndex(p.Role, metric.Key); ok && !metric.HeroSpecific() {
+			line.Group = "Главное"
+			top = append(top, ranked{idx, line})
+			continue
+		}
+		out = append(out, line)
 	}
-	return out
+	sort.Slice(top, func(i, j int) bool { return top[i].idx < top[j].idx })
+	head := make([]Line, 0, len(top))
+	for _, r := range top {
+		head = append(head, r.line)
+	}
+	return append(head, out...)
 }
