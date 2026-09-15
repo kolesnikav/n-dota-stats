@@ -95,12 +95,16 @@ func joinLines(lines []string) string {
 	return out
 }
 
-// Reparse просит разобрать реплеи матчей, которые ещё не разобраны и чьи
-// реплеи не успели истечь, а затем перечитывает их.
+// Reparse просит разобрать реплеи ещё не разобранных матчей, а затем
+// перечитывает их — в несколько заходов, потому что очередь на той стороне
+// разбирает не мгновенно.
 //
 // Смысл: поведенческие показатели — варды, стаки, линия к 10:00, точность
 // умений — живут только в разобранном матче. Пока их нет, половина сводки
 // показывает числа без всякой базы.
+//
+// Про срок жизни реплеев: опытным путём разобрались матчи и 54-дневной
+// давности, так что ограничивать окно двумя неделями не нужно.
 func (a *App) Reparse(chatID, accountID int64, days int, wait time.Duration, log func(string, ...any)) (requested, updated int, err error) {
 	ids, err := a.DB.UnparsedMatches(days)
 	if err != nil {
@@ -113,23 +117,32 @@ func (a *App) Reparse(chatID, accountID int64, days int, wait time.Duration, log
 		a.OD.RequestParse(id)
 		requested++
 	}
-	log("заявок на разбор отправлено: %d, жду %s", requested, wait)
-	time.Sleep(wait)
+	log("заявок на разбор отправлено: %d", requested)
 
-	for _, id := range ids {
-		m, raw, err := a.Source.Match(id)
-		if err != nil {
-			continue
+	pending := ids
+	for round := 1; round <= 4 && len(pending) > 0; round++ {
+		log("жду %s, затем проверяю %d матчей (заход %d)", wait, len(pending), round)
+		time.Sleep(wait)
+		var still []int64
+		for _, id := range pending {
+			m, raw, err := a.Source.Match(id)
+			if err != nil {
+				still = append(still, id)
+				continue
+			}
+			if m.Detail == dota.DetailScoreboard {
+				still = append(still, id)
+				continue
+			}
+			if err := a.DB.SaveMatch(m, raw); err != nil {
+				continue
+			}
+			if _, err := a.Report(chatID, accountID, id); err == nil {
+				updated++
+			}
 		}
-		if m.Detail == dota.DetailScoreboard {
-			continue // ещё не разобрали
-		}
-		if err := a.DB.SaveMatch(m, raw); err != nil {
-			continue
-		}
-		if _, err := a.Report(chatID, accountID, id); err == nil {
-			updated++
-		}
+		log("разобрано за заход: %d, осталось: %d", len(pending)-len(still), len(still))
+		pending = still
 	}
 	return requested, updated, nil
 }

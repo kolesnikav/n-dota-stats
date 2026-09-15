@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -140,6 +141,25 @@ func main() {
 		os.Exit(1)
 	}
 	a := app.New(db, telegram.New(token), source, od)
+
+	// Живая сессия Game Coordinator: только она отдаёт ключ реплея. Без неё
+	// бот работает, просто разбор матчей ограничен тем, что успела разобрать
+	// сторонняя очередь.
+	if user := os.Getenv("STEAM_BOT_USER"); user != "" {
+		gcClient := gc.NewSteam(user, os.Getenv("STEAM_BOT_PASS"),
+			os.Getenv("STEAM_GUARD_CODE"), os.Getenv("STEAM_TWO_FACTOR_CODE"),
+			func(f string, args ...any) { fmt.Fprintf(os.Stderr, f+"\n", args...) })
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if err := gcClient.Start(ctx, 90*time.Second); err != nil {
+			fmt.Fprintln(os.Stderr, "Game Coordinator недоступен:", err)
+			fmt.Fprintln(os.Stderr, "бот продолжит работу без своего разбора реплеев")
+		} else {
+			a.Salt = gcClient
+			defer gcClient.Close()
+		}
+	}
+
 	if specs := os.Getenv("DOTA_MANUAL_SALTS"); specs != "" {
 		manual, err := gc.NewManual(strings.Split(specs, ","))
 		if err != nil {
