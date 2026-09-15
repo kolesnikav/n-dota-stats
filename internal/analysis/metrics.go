@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
@@ -17,10 +18,17 @@ const (
 	CompareLaneOpponent                      // соперник по линии
 )
 
-// History отдаёт среднее значение показателя по прошлым матчам игрока на роли.
+// History отдаёт среднее значение показателя по прошлым матчам игрока: либо на
+// той же роли, либо на том же герое — смотря что осмысленнее для показателя.
 type History interface {
 	Average(accountID int64, role dota.Role, key string) (avg float64, games int, ok bool)
+	AverageOnHero(accountID int64, heroID int, key string) (avg float64, games int, ok bool)
 }
+
+// minHistoryGames — с какого числа матчей показывать своё среднее. Три — это
+// мало, поэтому рядом всегда пишется объём выборки: пусть цифра будет видна,
+// но и её надёжность тоже.
+const minHistoryGames = 3
 
 // Ctx — всё, что нужно показателю для расчёта.
 type Ctx struct {
@@ -47,13 +55,15 @@ type Metric struct {
 	Key     string
 	Label   string
 	Roles   []dota.Role
-	Heroes  []int       // если задано — показывается только на этих героях
-	Short   bool        // попадает в короткую сводку
-	Needs   dota.Detail // какой уровень данных требуется
-	Group   string      // раздел сводки
-	Lower   bool        // меньше значит лучше
-	Unit    string      // единица измерения для пометок сравнения, например "%"
-	Bench   string      // ключ benchmarks для перцентиля
+	Heroes  []int                // если задано — показывается только на этих героях
+	ByHero  bool                 // сравнивать со своей историей по герою, а не по роли
+	Short   bool                 // попадает в короткую сводку
+	Needs   dota.Detail          // какой уровень данных требуется
+	Group   string               // раздел сводки
+	Lower   bool                 // меньше значит лучше
+	Unit    string               // единица измерения для пометок сравнения, например "%"
+	Format  func(float64) string // как печатать число в пометках, если не просто число
+	Bench   string               // ключ benchmarks для перцентиля
 	Compare []CompareKind
 	Calc    func(*Ctx) (Value, bool)
 }
@@ -83,6 +93,22 @@ func (m Metric) forHero(heroID int) bool {
 
 // HeroSpecific сообщает, что показатель заведён под конкретных героев.
 func (m Metric) HeroSpecific() bool { return len(m.Heroes) > 0 }
+
+// historyByHero отвечает, с чем сравнивать своё прошлое. Лечение, контроль и
+// точность умений задаются героем, а не позицией: сравнивать лечение Мираны со
+// своим средним по всем саппортам — значит сравнивать её с Дазлом.
+func (m Metric) historyByHero() bool { return m.ByHero || m.HeroSpecific() }
+
+// compares отвечает, объявлена ли такая база сравнения. Маркер не должен
+// опираться на то, чего в строке не видно: иначе непонятно, откуда вердикт.
+func (m Metric) compares(kind CompareKind) bool {
+	for _, k := range m.Compare {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
 
 var all = []dota.Role{dota.RoleCarry, dota.RoleMid, dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}
 var cores = []dota.Role{dota.RoleCarry, dota.RoleMid, dota.RoleOfflane}
@@ -151,6 +177,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "nw_gap", Group: "Линия", Label: "Нетворс против вражеского керри", Roles: []dota.Role{dota.RoleCarry}, Short: true,
+		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			var enemy *dota.Player
 			for _, o := range c.Match.Opponents(c.Player) {
@@ -172,6 +199,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "dmg_share", Group: "Бой", Label: "Доля урона команды", Roles: cores, Unit: "%",
+		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			var total int
 			for _, p := range c.Match.Team(c.Player.IsRadiant) {
@@ -200,6 +228,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "kill_part", Group: "Бой", Label: "Участие в убийствах команды", Roles: []dota.Role{dota.RoleMid, dota.RoleRoamer}, Unit: "%",
+		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			var teamKills int
 			for _, p := range c.Match.Team(c.Player.IsRadiant) {
@@ -234,7 +263,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "stuns", Group: "Бой", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с",
+		Key: "stuns", Group: "Бой", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с", ByHero: true,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.Stuns <= 0 {
@@ -263,7 +292,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "neutrals", Group: "Фарм", Label: "Нейтралы", Roles: []dota.Role{dota.RoleCarry, dota.RoleOfflane},
-		Needs: dota.DetailMeta,
+		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.NeutralKills == 0 {
 				return none()
@@ -272,7 +301,8 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "healing", Group: "Бой", Label: "Лечение", Roles: supports,
+		Key: "healing", Group: "Бой", Label: "Лечение", Roles: supports, ByHero: true,
+		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.HeroHealing == 0 {
 				return none()
@@ -282,7 +312,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "buybacks", Group: "Бой", Label: "Байбэки", Roles: all,
-		Needs: dota.DetailMeta,
+		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.Buybacks == 0 {
 				return none()
@@ -292,7 +322,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "tp", Group: "Карта", Label: "Использовано TP", Roles: supports,
-		Needs: dota.DetailMeta,
+		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			n := c.Player.ItemUses["tpscroll"]
 			if n == 0 {
@@ -302,8 +332,9 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "boots", Group: "Карта", Label: "Ботинки куплены", Roles: all,
+		Key: "boots", Group: "Карта", Label: "Ботинки куплены", Roles: all, Lower: true,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
+		Format: func(f float64) string { return clock(int(f)) },
 		Calc: func(c *Ctx) (Value, bool) {
 			best := -1
 			for _, item := range []string{"boots", "power_treads", "arcane_boots", "phase_boots", "tranquil_boots"} {
@@ -438,14 +469,28 @@ func (m Metric) notes(c *Ctx, v Value) []string {
 			}
 		case CompareRoleMedian:
 			if med, ok := RoleMedian(c.Player.Role, m.Key); ok && v.Has {
-				out = append(out, fmt.Sprintf("медиана %s%s", trim(med), m.Unit))
+				out = append(out, "медиана "+m.fmtNum(med))
 			}
 		case CompareOwnHistory:
 			if c.History == nil || c.Player.AccountID == 0 || !v.Has {
 				continue
 			}
-			if avg, games, ok := c.History.Average(c.Player.AccountID, c.Player.Role, m.Key); ok && games >= 5 {
-				out = append(out, fmt.Sprintf("твоё среднее %s%s", trim(avg), m.Unit))
+			var (
+				avg   float64
+				games int
+				ok    bool
+			)
+			if m.historyByHero() {
+				avg, games, ok = c.History.AverageOnHero(c.Player.AccountID, c.Player.HeroID, m.Key)
+			} else {
+				avg, games, ok = c.History.Average(c.Player.AccountID, c.Player.Role, m.Key)
+			}
+			if ok && games >= minHistoryGames {
+				note := "твоё среднее " + m.fmtNum(avg)
+				if games < 10 {
+					note += fmt.Sprintf(" (%s)", plural(games, "игра", "игры", "игр"))
+				}
+				out = append(out, note)
 			}
 		case CompareLaneOpponent:
 			if c.Opponent == nil || !v.Has {
@@ -462,6 +507,29 @@ func (m Metric) notes(c *Ctx, v Value) []string {
 
 // trim печатает число так, как его читает человек: у крупных величин доли
 // не нужны, у мелких — единственное, что отличает одно значение от другого.
+// plural склоняет число игр по-русски.
+func plural(n int, one, few, many string) string {
+	mod100, mod10 := n%100, n%10
+	switch {
+	case mod100 >= 11 && mod100 <= 14:
+		return fmt.Sprintf("%d %s", n, many)
+	case mod10 == 1:
+		return fmt.Sprintf("%d %s", n, one)
+	case mod10 >= 2 && mod10 <= 4:
+		return fmt.Sprintf("%d %s", n, few)
+	default:
+		return fmt.Sprintf("%d %s", n, many)
+	}
+}
+
+// fmtNum печатает число в пометке так же, как выглядит само значение.
+func (m Metric) fmtNum(f float64) string {
+	if m.Format != nil {
+		return m.Format(f)
+	}
+	return trim(f) + m.Unit
+}
+
 func trim(f float64) string {
 	if f >= 10 || f <= -10 || f == float64(int(f)) {
 		return fmt.Sprintf("%.0f", f)
@@ -503,7 +571,7 @@ func (m Metric) verdict(c *Ctx, v Value) int {
 	if med, ok := RoleMedian(c.Player.Role, m.Key); ok && med > 0 {
 		ratio := v.Num / med
 		if m.Lower {
-			ratio = med / max(v.Num, 0.01)
+			ratio = med / math.Max(v.Num, 0.01)
 		}
 		switch {
 		case ratio >= 1.15:
@@ -512,6 +580,32 @@ func (m Metric) verdict(c *Ctx, v Value) int {
 			return VerdictBad
 		default:
 			return VerdictEven
+		}
+	}
+	if c.History != nil && c.Player.AccountID != 0 && m.compares(CompareOwnHistory) {
+		var (
+			avg   float64
+			games int
+			ok    bool
+		)
+		if m.historyByHero() {
+			avg, games, ok = c.History.AverageOnHero(c.Player.AccountID, c.Player.HeroID, m.Key)
+		} else {
+			avg, games, ok = c.History.Average(c.Player.AccountID, c.Player.Role, m.Key)
+		}
+		if ok && games >= minHistoryGames && avg > 0 {
+			ratio := v.Num / avg
+			if m.Lower {
+				ratio = avg / math.Max(v.Num, 0.01)
+			}
+			switch {
+			case ratio >= 1.15:
+				return VerdictGood
+			case ratio <= 0.85:
+				return VerdictBad
+			default:
+				return VerdictEven
+			}
 		}
 	}
 	if m.Bench != "" {

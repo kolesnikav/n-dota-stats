@@ -30,6 +30,7 @@ func main() {
 		showMet  = flag.Bool("metrics", false, "напечатать набор показателей по ролям и выйти")
 		backfill = flag.Int("backfill", 0, "загрузить историю матчей за N дней и выйти")
 		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
+		reparse  = flag.Int("reparse", 0, "попросить разобрать реплеи матчей за N дней и перечитать их")
 	)
 	flag.Parse()
 
@@ -52,6 +53,30 @@ func main() {
 	var source app.MatchSource = odota.NewSource(od)
 	if key := os.Getenv("STEAM_API_KEY"); key != "" {
 		source = valve.New(key)
+	}
+
+	if *reparse > 0 {
+		if *account == 0 {
+			fmt.Fprintln(os.Stderr, "нужен --account")
+			os.Exit(1)
+		}
+		src := odota.NewSource(od)
+		src.NoParseRequests = true
+		a := app.New(db, nil, src, od)
+		var chatID int64
+		for _, u := range mustUsers(db) {
+			if u.AccountID == *account {
+				chatID = u.ChatID
+			}
+		}
+		req, upd, err := a.Reparse(chatID, *account, *reparse, 4*time.Minute,
+			func(f string, args ...any) { fmt.Printf(f+"\n", args...) })
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("запрошено разборов: %d, обновилось матчей: %d\n", req, upd)
+		return
 	}
 
 	if *audit {

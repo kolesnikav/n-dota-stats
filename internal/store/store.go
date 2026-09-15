@@ -511,6 +511,28 @@ func (d *DB) UserMatches(accountID int64, limit int) ([]UserMatch, error) {
 	return out, rows.Err()
 }
 
+// UnparsedMatches возвращает матчи за последние days дней, по которым нет
+// разбора. Реплеи Valve живут около двух недель, поэтому просить разбор для
+// более старых бессмысленно.
+func (d *DB) UnparsedMatches(days int) ([]int64, error) {
+	since := time.Now().AddDate(0, 0, -days).Unix()
+	rows, err := d.sql.Query(
+		`SELECT match_id FROM matches WHERE detail = 0 AND start_time >= ? ORDER BY start_time DESC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // HistoryRow — строка истории для проверки качества показателей.
 type HistoryRow struct {
 	MatchID int64
@@ -738,6 +760,21 @@ func (d *DB) Labelled(accountID int64, featureKeys []string) ([]LabelledMatch, e
 	return out, nil
 }
 
+// AverageOnHero — среднее по прошлым матчам на этом герое, независимо от роли.
+// Нужно для показателей вроде точности стрелы: она зависит от героя, а не от
+// позиции, и разбивать выборку по ролям значит потерять её.
+func (d *DB) AverageOnHero(accountID int64, heroID int, key string) (float64, int, bool) {
+	rows, err := d.sql.Query(`
+		SELECT COALESCE(mu.metrics,'{}') FROM match_users mu
+		JOIN players p ON p.match_id = mu.match_id AND p.account_id = mu.account_id
+		WHERE mu.account_id = ? AND p.hero_id = ?`, accountID, heroID)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer rows.Close()
+	return averageOf(rows, key)
+}
+
 // Average реализует analysis.History: среднее значение показателя по прошлым
 // матчам игрока на той же роли.
 func (d *DB) Average(accountID int64, role dota.Role, key string) (float64, int, bool) {
@@ -748,6 +785,10 @@ func (d *DB) Average(accountID int64, role dota.Role, key string) (float64, int,
 		return 0, 0, false
 	}
 	defer rows.Close()
+	return averageOf(rows, key)
+}
+
+func averageOf(rows *sql.Rows, key string) (float64, int, bool) {
 	var sum float64
 	var n int
 	for rows.Next() {

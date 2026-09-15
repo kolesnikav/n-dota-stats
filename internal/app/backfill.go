@@ -94,3 +94,42 @@ func joinLines(lines []string) string {
 	}
 	return out
 }
+
+// Reparse просит разобрать реплеи матчей, которые ещё не разобраны и чьи
+// реплеи не успели истечь, а затем перечитывает их.
+//
+// Смысл: поведенческие показатели — варды, стаки, линия к 10:00, точность
+// умений — живут только в разобранном матче. Пока их нет, половина сводки
+// показывает числа без всякой базы.
+func (a *App) Reparse(chatID, accountID int64, days int, wait time.Duration, log func(string, ...any)) (requested, updated int, err error) {
+	ids, err := a.DB.UnparsedMatches(days)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
+	for _, id := range ids {
+		a.OD.RequestParse(id)
+		requested++
+	}
+	log("заявок на разбор отправлено: %d, жду %s", requested, wait)
+	time.Sleep(wait)
+
+	for _, id := range ids {
+		m, raw, err := a.Source.Match(id)
+		if err != nil {
+			continue
+		}
+		if m.Detail == dota.DetailScoreboard {
+			continue // ещё не разобрали
+		}
+		if err := a.DB.SaveMatch(m, raw); err != nil {
+			continue
+		}
+		if _, err := a.Report(chatID, accountID, id); err == nil {
+			updated++
+		}
+	}
+	return requested, updated, nil
+}
