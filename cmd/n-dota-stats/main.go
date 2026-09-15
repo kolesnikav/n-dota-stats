@@ -208,6 +208,11 @@ func printMetrics() {
 			}
 		}
 	}
+	scopes := map[analysis.Scope]string{
+		analysis.ScopeRole:     "по роли",
+		analysis.ScopeHero:     "по герою",
+		analysis.ScopeHeroRole: "по герою в роли",
+	}
 	fmt.Printf("\nПоказатели под конкретных героев\n")
 	for _, m := range analysis.Registry {
 		if !m.HeroSpecific() {
@@ -217,7 +222,16 @@ func printMetrics() {
 		for _, id := range m.Heroes {
 			heroes = append(heroes, dota.HeroName(id))
 		}
-		fmt.Printf("   %-9s %-32s %-11s %s\n", "герой", m.Label, needs[m.Needs], strings.Join(heroes, ", "))
+		fmt.Printf("   %-32s %-11s %-16s %s\n", m.Label, needs[m.Needs],
+			scopes[m.EffectiveScope()], strings.Join(heroes, ", "))
+	}
+
+	fmt.Printf("\nПоказатели, которые сравниваются не по роли\n")
+	for _, m := range analysis.Registry {
+		if m.HeroSpecific() || m.EffectiveScope() == analysis.ScopeRole {
+			continue
+		}
+		fmt.Printf("   %-32s %s\n", m.Label, scopes[m.EffectiveScope()])
 	}
 
 	fmt.Printf("\nВсего показателей в реестре: %d\n", len(analysis.Registry))

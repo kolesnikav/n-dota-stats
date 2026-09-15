@@ -79,6 +79,19 @@ func (r Role) String() string {
 	return "роль не определена"
 }
 
+var roleShort = map[Role]string{
+	RoleCarry: "керри", RoleMid: "мид", RoleOfflane: "офф",
+	RoleRoamer: "роум", RoleHard: "хард",
+}
+
+// Short — короткое имя роли для подписей, где важна длина.
+func (r Role) Short() string {
+	if n, ok := roleShort[r]; ok {
+		return n
+	}
+	return "?"
+}
+
 // Valid сообщает, что роль распознана.
 func (r Role) Valid() bool { return r >= RoleCarry && r <= RoleHard }
 

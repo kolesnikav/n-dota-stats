@@ -775,6 +775,21 @@ func (d *DB) AverageOnHero(accountID int64, heroID int, key string) (float64, in
 	return averageOf(rows, key)
 }
 
+// AverageOnHeroRole — среднее по матчам на этом герое и в этой роли.
+// Нужно там, где показатель задан и героем, и позицией: лечение Дазла на
+// пятёрке и на миде — это разные величины.
+func (d *DB) AverageOnHeroRole(accountID int64, heroID int, role dota.Role, key string) (float64, int, bool) {
+	rows, err := d.sql.Query(`
+		SELECT COALESCE(mu.metrics,'{}') FROM match_users mu
+		JOIN players p ON p.match_id = mu.match_id AND p.account_id = mu.account_id
+		WHERE mu.account_id = ? AND p.hero_id = ? AND mu.role = ?`, accountID, heroID, int(role))
+	if err != nil {
+		return 0, 0, false
+	}
+	defer rows.Close()
+	return averageOf(rows, key)
+}
+
 // Average реализует analysis.History: среднее значение показателя по прошлым
 // матчам игрока на той же роли.
 func (d *DB) Average(accountID int64, role dota.Role, key string) (float64, int, bool) {

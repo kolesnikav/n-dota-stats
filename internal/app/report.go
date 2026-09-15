@@ -98,8 +98,23 @@ func (r *Report) body() []string {
 		}
 		byGroup[g] = append(byGroup[g], l)
 	}
+	// Сначала общие разделы в заданном порядке, затем разделы, названные по
+	// герою, — они появляются динамически и в списке Groups их нет.
 	order := append([]string(nil), analysis.Groups...)
-	order = append(order, "Прочее")
+	seen := map[string]bool{}
+	for _, g := range order {
+		seen[g] = true
+	}
+	for _, l := range r.Full {
+		g := l.Group
+		if g == "" {
+			g = "Прочее"
+		}
+		if !seen[g] {
+			seen[g] = true
+			order = append(order, g)
+		}
+	}
 
 	var out []string
 	for _, g := range order {

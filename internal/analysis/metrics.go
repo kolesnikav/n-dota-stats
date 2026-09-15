@@ -18,11 +18,25 @@ const (
 	CompareLaneOpponent                      // соперник по линии
 )
 
-// History отдаёт среднее значение показателя по прошлым матчам игрока: либо на
-// той же роли, либо на том же герое — смотря что осмысленнее для показателя.
+// Scope — в каком разрезе сравнивать показатель с собственным прошлым.
+//
+// Разрез выбирается по природе величины. Точность крюка или стрелы задаётся
+// героем и почти не зависит от позиции — это ScopeHero. А лечение Дазла на
+// пятёрке и на миде это разные величины, потому что разный уровень, разные
+// предметы и разный смысл игры, — это ScopeHeroRole.
+type Scope int
+
+const (
+	ScopeRole     Scope = iota // по своей роли, на любых героях
+	ScopeHero                  // по герою, на любых ролях
+	ScopeHeroRole              // по герою в этой же роли
+)
+
+// History отдаёт среднее по прошлым матчам игрока в нужном разрезе.
 type History interface {
 	Average(accountID int64, role dota.Role, key string) (avg float64, games int, ok bool)
 	AverageOnHero(accountID int64, heroID int, key string) (avg float64, games int, ok bool)
+	AverageOnHeroRole(accountID int64, heroID int, role dota.Role, key string) (avg float64, games int, ok bool)
 }
 
 // minHistoryGames — с какого числа матчей показывать своё среднее. Три — это
@@ -56,7 +70,7 @@ type Metric struct {
 	Label   string
 	Roles   []dota.Role
 	Heroes  []int                // если задано — показывается только на этих героях
-	ByHero  bool                 // сравнивать со своей историей по герою, а не по роли
+	Scope   Scope                // с чем сравнивать свою историю
 	Short   bool                 // попадает в короткую сводку
 	Needs   dota.Detail          // какой уровень данных требуется
 	Group   string               // раздел сводки
@@ -91,13 +105,65 @@ func (m Metric) forHero(heroID int) bool {
 	return false
 }
 
+// GroupFor — заголовок раздела для этого показателя. Для показателей под
+// конкретных героев это имя героя, а если величина зависит ещё и от позиции —
+// имя героя с ролью: «Мирана» против «Мирана (хард)».
+func (m Metric) GroupFor(p *dota.Player) string {
+	if !m.HeroSpecific() {
+		return m.Group
+	}
+	if m.scope() == ScopeHeroRole {
+		return fmt.Sprintf("%s (%s)", p.Name(), p.Role.Short())
+	}
+	return p.Name()
+}
+
 // HeroSpecific сообщает, что показатель заведён под конкретных героев.
 func (m Metric) HeroSpecific() bool { return len(m.Heroes) > 0 }
 
-// historyByHero отвечает, с чем сравнивать своё прошлое. Лечение, контроль и
-// точность умений задаются героем, а не позицией: сравнивать лечение Мираны со
-// своим средним по всем саппортам — значит сравнивать её с Дазлом.
-func (m Metric) historyByHero() bool { return m.ByHero || m.HeroSpecific() }
+// EffectiveScope — разрез сравнения с учётом умолчаний.
+func (m Metric) EffectiveScope() Scope { return m.scope() }
+
+// scope — разрез сравнения. Показатели, заведённые под конкретных героев, по
+// умолчанию сравниваются по герою.
+func (m Metric) scope() Scope {
+	if m.Scope == ScopeRole && m.HeroSpecific() {
+		return ScopeHero
+	}
+	return m.Scope
+}
+
+// ownAverage берёт среднее в нужном разрезе. Если выборки не хватает, разрез
+// расширяется — лучше сравнение погрубее с честной подписью, чем никакого.
+func (m Metric) ownAverage(c *Ctx) (avg float64, games int, label string, ok bool) {
+	p := c.Player
+	try := func(sc Scope) (float64, int, string, bool) {
+		switch sc {
+		case ScopeHeroRole:
+			a, n, k := c.History.AverageOnHeroRole(p.AccountID, p.HeroID, p.Role, m.Key)
+			return a, n, fmt.Sprintf("твоё на %s (%s)", p.Name(), p.Role.Short()), k
+		case ScopeHero:
+			a, n, k := c.History.AverageOnHero(p.AccountID, p.HeroID, m.Key)
+			return a, n, "твоё на " + p.Name(), k
+		default:
+			a, n, k := c.History.Average(p.AccountID, p.Role, m.Key)
+			return a, n, "твоё среднее", k
+		}
+	}
+	order := []Scope{m.scope()}
+	switch m.scope() {
+	case ScopeHeroRole:
+		order = append(order, ScopeHero, ScopeRole)
+	case ScopeHero:
+		order = append(order, ScopeRole)
+	}
+	for _, sc := range order {
+		if a, n, l, k := try(sc); k && n >= minHistoryGames {
+			return a, n, l, true
+		}
+	}
+	return 0, 0, "", false
+}
 
 // compares отвечает, объявлена ли такая база сравнения. Маркер не должен
 // опираться на то, чего в строке не видно: иначе непонятно, откуда вердикт.
@@ -263,7 +329,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "stuns", Group: "Бой", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с", ByHero: true,
+		Key: "stuns", Group: "Бой", Label: "Секунды контроля", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Unit: " с", Scope: ScopeHeroRole,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.Stuns <= 0 {
@@ -301,7 +367,7 @@ var Registry = []Metric{
 		},
 	},
 	{
-		Key: "healing", Group: "Бой", Label: "Лечение", Roles: supports, ByHero: true,
+		Key: "healing", Group: "Бой", Label: "Лечение", Roles: supports, Scope: ScopeHeroRole,
 		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			if c.Player.HeroHealing == 0 {
@@ -358,13 +424,13 @@ var Registry = []Metric{
 }
 
 // Groups — разделы сводки в порядке показа.
-var Groups = []string{"Линия", "Фарм", "Бой", "Карта", "Герой"}
+var Groups = []string{"Линия", "Фарм", "Бой", "Карта"}
 
 // skillshot строит показатель точности умения с наведением: сколько попаданий
 // по героям из скольких применений. Данные есть только в разобранном реплее.
 func skillshot(key, label string, heroID int, ability string) Metric {
 	return Metric{
-		Key: key, Group: "Герой", Label: label, Roles: all, Heroes: []int{heroID},
+		Key: key, Label: label, Roles: all, Heroes: []int{heroID},
 		Needs: dota.DetailReplay, Unit: "%",
 		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
@@ -475,18 +541,13 @@ func (m Metric) notes(c *Ctx, v Value) []string {
 			if c.History == nil || c.Player.AccountID == 0 || !v.Has {
 				continue
 			}
-			var (
-				avg   float64
-				games int
-				ok    bool
-			)
-			if m.historyByHero() {
-				avg, games, ok = c.History.AverageOnHero(c.Player.AccountID, c.Player.HeroID, m.Key)
-			} else {
-				avg, games, ok = c.History.Average(c.Player.AccountID, c.Player.Role, m.Key)
-			}
-			if ok && games >= minHistoryGames {
-				note := "твоё среднее " + m.fmtNum(avg)
+			avg, games, label, ok := m.ownAverage(c)
+			if ok {
+				// В разделе, названном по герою, имя героя в пометке лишнее.
+				if m.HeroSpecific() {
+					label = "твоё среднее"
+				}
+				note := label + " " + m.fmtNum(avg)
 				if games < 10 {
 					note += fmt.Sprintf(" (%s)", plural(games, "игра", "игры", "игр"))
 				}
@@ -583,17 +644,8 @@ func (m Metric) verdict(c *Ctx, v Value) int {
 		}
 	}
 	if c.History != nil && c.Player.AccountID != 0 && m.compares(CompareOwnHistory) {
-		var (
-			avg   float64
-			games int
-			ok    bool
-		)
-		if m.historyByHero() {
-			avg, games, ok = c.History.AverageOnHero(c.Player.AccountID, c.Player.HeroID, m.Key)
-		} else {
-			avg, games, ok = c.History.Average(c.Player.AccountID, c.Player.Role, m.Key)
-		}
-		if ok && games >= minHistoryGames && avg > 0 {
+		avg, _, _, ok := m.ownAverage(c)
+		if ok && avg > 0 {
 			ratio := v.Num / avg
 			if m.Lower {
 				ratio = avg / math.Max(v.Num, 0.01)
@@ -639,7 +691,7 @@ func Build(m *dota.Match, p *dota.Player, hist History, short bool) []Line {
 			continue
 		}
 		out = append(out, Line{
-			Group:   metric.Group,
+			Group:   metric.GroupFor(p),
 			Label:   metric.Label,
 			Value:   v.Text,
 			Notes:   metric.notes(c, v),
