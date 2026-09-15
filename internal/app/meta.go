@@ -6,6 +6,7 @@ import (
 
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
+	"github.com/kolesnikav/n-dota-stats/internal/replay"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
 )
 
@@ -64,5 +65,33 @@ func (a *App) processMeta(matchID int64) {
 	}
 	_ = a.DB.SetReplayState(matchID, store.ReplayMeta, "")
 	a.Log("матч %d: метаданные разобраны", matchID)
+	a.Refresh(matchID)
+
+	a.processReplay(matchID, salt)
+}
+
+// processReplay качает полный реплей и разбирает его своими силами: варды,
+// поминутные кривые и смерти с координатами берутся отсюда, а не из чужого
+// разбора. Файл весит десятки мегабайт, зато сам разбор занимает пару секунд.
+func (a *App) processReplay(matchID int64, salt gc.Salt) {
+	m, err := a.LoadMatch(matchID, 0)
+	if err != nil {
+		return
+	}
+	res, err := replay.Fetch(nil, salt.Cluster, matchID, salt.Salt, m)
+	if err != nil {
+		a.Log("реплей %d: %v", matchID, err)
+		return
+	}
+	blob, err := json.Marshal(res)
+	if err != nil {
+		return
+	}
+	if err := a.DB.SaveReplay(matchID, blob); err != nil {
+		a.Log("сохранение разбора %d: %v", matchID, err)
+		return
+	}
+	_ = a.DB.SetReplayState(matchID, store.ReplayParsed, "")
+	a.Log("матч %d: реплей разобран своими силами", matchID)
 	a.Refresh(matchID)
 }

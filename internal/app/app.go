@@ -16,6 +16,7 @@ import (
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
 	"github.com/kolesnikav/n-dota-stats/internal/odota"
+	"github.com/kolesnikav/n-dota-stats/internal/replay"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
 	"github.com/kolesnikav/n-dota-stats/internal/telegram"
 )
@@ -82,6 +83,12 @@ func (a *App) LoadMatch(matchID int64, forAccount int64) (*dota.Match, error) {
 		var md meta.Metadata
 		if json.Unmarshal(blob, &md) == nil {
 			md.Apply(m)
+		}
+	}
+	if blob, ok := a.DB.LoadReplay(matchID); ok {
+		var rp replay.Result
+		if json.Unmarshal(blob, &rp) == nil {
+			rp.Apply(m)
 		}
 	}
 	benchmarks.Apply(a.DB, m)

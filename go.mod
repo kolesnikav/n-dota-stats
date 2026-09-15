@@ -13,8 +13,11 @@ require (
 require (
 	github.com/aperturerobotics/protobuf v0.0.0-20260203024654-8201686529c4 // indirect
 	github.com/aperturerobotics/protobuf-go-lite v0.18.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dotabuff/manta v1.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/golang/snappy v0.0.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

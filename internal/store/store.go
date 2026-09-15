@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS gc_budget (day TEXT PRIMARY KEY, requests INTEGER);
 
 CREATE TABLE IF NOT EXISTS match_meta (match_id INTEGER PRIMARY KEY, data TEXT);
 
+CREATE TABLE IF NOT EXISTS match_replay (match_id INTEGER PRIMARY KEY, data TEXT);
+
 CREATE INDEX IF NOT EXISTS idx_match_users_chat ON match_users(chat_id);
 CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
 `
@@ -356,6 +358,23 @@ func (d *DB) SaveMeta(matchID int64, data []byte) error {
 func (d *DB) LoadMeta(matchID int64) ([]byte, bool) {
 	var s string
 	if d.sql.QueryRow(`SELECT COALESCE(data,'') FROM match_meta WHERE match_id=?`, matchID).Scan(&s) != nil || s == "" {
+		return nil, false
+	}
+	return []byte(s), true
+}
+
+// SaveReplay кладёт результат своего разбора реплея.
+func (d *DB) SaveReplay(matchID int64, data []byte) error {
+	_, err := d.sql.Exec(`
+		INSERT INTO match_replay(match_id,data) VALUES(?,?)
+		ON CONFLICT(match_id) DO UPDATE SET data=excluded.data`, matchID, string(data))
+	return err
+}
+
+// LoadReplay возвращает сохранённый разбор реплея.
+func (d *DB) LoadReplay(matchID int64) ([]byte, bool) {
+	var s string
+	if d.sql.QueryRow(`SELECT COALESCE(data,'') FROM match_replay WHERE match_id=?`, matchID).Scan(&s) != nil || s == "" {
 		return nil, false
 	}
 	return []byte(s), true
