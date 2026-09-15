@@ -1,0 +1,128 @@
+// Команда n-dota-stats — телеграм-бот с разбором матчей Dota 2.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/kolesnikav/n-dota-stats/internal/analysis"
+	"github.com/kolesnikav/n-dota-stats/internal/app"
+	"github.com/kolesnikav/n-dota-stats/internal/benchmarks"
+	"github.com/kolesnikav/n-dota-stats/internal/gc"
+	"github.com/kolesnikav/n-dota-stats/internal/meta"
+	"github.com/kolesnikav/n-dota-stats/internal/odota"
+	"github.com/kolesnikav/n-dota-stats/internal/store"
+	"github.com/kolesnikav/n-dota-stats/internal/telegram"
+	"github.com/kolesnikav/n-dota-stats/internal/valve"
+)
+
+func main() {
+	var (
+		dryRun   = flag.Bool("dry-run", false, "напечатать сводку по матчу и выйти, без телеграма")
+		account  = flag.Int64("account", 0, "id аккаунта для --dry-run")
+		match    = flag.Int64("match", 0, "id матча для --dry-run")
+		dbPath   = flag.String("db", env("DB_PATH", "bot.db"), "путь к базе")
+		metaPath = flag.String("meta", "", "файл метаданных матча для --dry-run")
+	)
+	flag.Parse()
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "база:", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	od := odota.New(os.Getenv("OPENDOTA_API_KEY"))
+
+	// Основной источник — Steam Web API. Без ключа откатываемся на OpenDota:
+	// бот остаётся рабочим, просто данные идут через посредника.
+	var source app.MatchSource = odota.NewSource(od)
+	if key := os.Getenv("STEAM_API_KEY"); key != "" {
+		source = valve.New(key)
+	}
+
+	if *dryRun {
+		if err := dry(db, source, od, *account, *match, *metaPath); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	token := strings.TrimSpace(os.Getenv("TELEGRAM_TOKEN"))
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "не задан TELEGRAM_TOKEN")
+		os.Exit(1)
+	}
+	a := app.New(db, telegram.New(token), source, od)
+	if specs := os.Getenv("DOTA_MANUAL_SALTS"); specs != "" {
+		manual, err := gc.NewManual(strings.Split(specs, ","))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ключи реплеев:", err)
+			os.Exit(1)
+		}
+		a.Salt = manual
+	}
+	if err := a.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "бот остановлен:", err)
+		os.Exit(1)
+	}
+}
+
+func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchID int64, metaPath string) error {
+	if account == 0 || matchID == 0 {
+		return fmt.Errorf("нужны --account и --match")
+	}
+	m, raw, err := source.Match(matchID)
+	if err != nil {
+		return err
+	}
+	_ = db.SaveMatch(m, raw)
+	if metaPath != "" {
+		blob, err := os.ReadFile(metaPath)
+		if err != nil {
+			return fmt.Errorf("метаданные: %w", err)
+		}
+		plain, err := meta.Decompress(blob)
+		if err != nil {
+			return fmt.Errorf("распаковка метаданных: %w", err)
+		}
+		md, err := meta.Parse(plain)
+		if err != nil {
+			return fmt.Errorf("разбор метаданных: %w", err)
+		}
+		fmt.Printf("метаданные применены к %d игрокам\n\n", md.Apply(m))
+	}
+	benchmarks.Apply(db, m)
+	analysis.DetectRoles(m, db.RoleHint)
+
+	a := app.New(db, nil, source, od)
+	rep, err := a.Build(m, account)
+	if err != nil {
+		return err
+	}
+	fmt.Println(strip(rep.Text(true)))
+	fmt.Println()
+	fmt.Println("Полный рейтинг:")
+	for i, s := range rep.Ranked {
+		fmt.Printf("%2d. %-16s %-7s %s  %.3f\n", i+1, s.Player.Name(),
+			s.Player.SideName(), s.Player.Role, s.Score)
+	}
+	return nil
+}
+
+func strip(s string) string {
+	r := strings.NewReplacer("<b>", "", "</b>", "", "<i>", "", "</i>", "",
+		"<code>", "", "</code>", "", "&amp;", "&", "&lt;", "<", "&gt;", ">", "&#39;", "'", "&#34;", `"`)
+	return r.Replace(s)
+}
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
