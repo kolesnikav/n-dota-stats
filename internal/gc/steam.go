@@ -2,14 +2,17 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	dota2 "github.com/paralin/go-dota2"
 	devents "github.com/paralin/go-dota2/events"
 	"github.com/paralin/go-steam"
+	unified "github.com/paralin/go-steam/protocol/protobuf/unified"
 	"github.com/sirupsen/logrus"
 )
 
@@ -100,7 +103,7 @@ func (s *Steam) loop(ctx context.Context, client *steam.Client, handler *dota2.D
 				ShouldRememberPassword: true,
 			})
 			if err != nil {
-				s.finish(fmt.Errorf("вход в Steam: %w", err))
+				s.finish(fmt.Errorf("вход в Steam: %w%s", err, guardHint(err)))
 				return
 			}
 
@@ -130,6 +133,33 @@ func (s *Steam) loop(ctx context.Context, client *steam.Client, handler *dota2.D
 			s.Log("Steam: %v", e)
 		}
 	}
+}
+
+// guardHint переводит требование Steam Guard в понятное указание: какой
+// именно код нужен и куда его положить.
+func guardHint(err error) string {
+	var authErr *steam.AuthSessionError
+	if !errors.As(err, &authErr) || len(authErr.Confirmations) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, c := range authErr.Confirmations {
+		switch c.Type {
+		case unified.EAuthSessionGuardType_k_EAuthSessionGuardType_EmailCode:
+			parts = append(parts, "код с почты — положи его в STEAM_GUARD_CODE")
+		case unified.EAuthSessionGuardType_k_EAuthSessionGuardType_DeviceCode:
+			parts = append(parts, "код из мобильного Steam — положи его в STEAM_TWO_FACTOR_CODE")
+		case unified.EAuthSessionGuardType_k_EAuthSessionGuardType_DeviceConfirmation:
+			parts = append(parts, "подтверждение в мобильном приложении")
+		case unified.EAuthSessionGuardType_k_EAuthSessionGuardType_EmailConfirmation:
+			parts = append(parts, "подтверждение по ссылке из письма")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\nSteam просит: " + strings.Join(parts, "; ") +
+		"\nКод живёт недолго, поэтому запускать бота нужно сразу после того, как положишь его в .env"
 }
 
 func (s *Steam) finish(err error) {

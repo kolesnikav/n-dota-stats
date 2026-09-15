@@ -32,6 +32,7 @@ func main() {
 		backfill = flag.Int("backfill", 0, "загрузить историю матчей за N дней и выйти")
 		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
 		reparse  = flag.Int("reparse", 0, "попросить разобрать реплеи матчей за N дней и перечитать их")
+		gcTest   = flag.Int64("gc-test", 0, "проверить цепочку: ключ реплея, метаданные, разбор — и выйти")
 	)
 	flag.Parse()
 
@@ -54,6 +55,40 @@ func main() {
 	var source app.MatchSource = odota.NewSource(od)
 	if key := os.Getenv("STEAM_API_KEY"); key != "" {
 		source = valve.New(key)
+	}
+
+	if *gcTest > 0 {
+		user, pass := os.Getenv("STEAM_BOT_USER"), os.Getenv("STEAM_BOT_PASS")
+		gcClient := gc.NewSteam(user, pass, os.Getenv("STEAM_GUARD_CODE"),
+			os.Getenv("STEAM_TWO_FACTOR_CODE"),
+			func(f string, a ...any) { fmt.Printf(f+"\n", a...) })
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if err := gcClient.Start(ctx, 90*time.Second); err != nil {
+			fmt.Fprintln(os.Stderr, "Game Coordinator:", err)
+			os.Exit(1)
+		}
+		defer gcClient.Close()
+
+		salt, err := gcClient.ReplaySalt(*gcTest)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ключ реплея:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("ключ получен: кластер %d, salt %d\n", salt.Cluster, salt.Salt)
+		fmt.Println("адрес метаданных:", meta.URL(salt.Cluster, *gcTest, salt.Salt))
+
+		md, err := meta.Fetch(nil, salt.Cluster, *gcTest, salt.Salt)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "метаданные:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("метаданные разобраны: матч %d, игроков %d\n", md.MatchID, len(md.Players))
+		for _, p := range md.Players {
+			fmt.Printf("  слот %-3d прокачка %2d шагов · уровни %2d · контроль %6.1f с · предметов %d\n",
+				p.Slot, len(p.AbilityUpgrades), len(p.LevelUpTimes), p.Stuns, len(p.FirstItem))
+		}
+		return
 	}
 
 	if *reparse > 0 {
