@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/mvp"
 	"github.com/kolesnikav/n-dota-stats/internal/odota"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
@@ -128,8 +129,7 @@ func (a *App) finishRegistration(chatID int64, text, name string) {
 		return
 	}
 	if len(ids) == 0 {
-		_, _ = a.Bot.Send(chatID,
-			"Не вижу матчей этого аккаунта. Проверь ID и то, что история матчей открыта.", nil)
+		_, _ = a.Bot.Send(chatID, a.emptyHistoryText(accountID), nil)
 		return
 	}
 	delete(a.pending, chatID)
@@ -161,6 +161,29 @@ func (a *App) finishRegistration(chatID int64, text, name string) {
 			a.Log("первая сводка: %v", err)
 		}
 	}()
+}
+
+// emptyHistoryText различает два совсем разных случая: аккаунта нет вовсе и
+// аккаунт есть, но Dota не публикует его матчи. Раньше и то и другое сводилось
+// к «проверь ID», хотя проверять надо разное.
+func (a *App) emptyHistoryText(accountID int64) string {
+	prof, err := a.OD.Profile(accountID)
+	if err != nil || !prof.Known {
+		return "Такого аккаунта не вижу. Проверь номер — он должен быть из ссылки " +
+			"вида dotabuff.com/players/<b>109779233</b>."
+	}
+	medal := ""
+	if m := dota.RankTierName(prof.RankTier); m != "" {
+		medal = ", " + m
+	}
+	return fmt.Sprintf(
+		"Аккаунт нашёлся — <b>%s</b>%s. Но матчей по нему не видно: в Dota выключено "+
+			"«Показывать публично данные о матчах».\n\n"+
+			"Включается так: Dota 2 → Настройки → Параметры → Приватность → "+
+			"«Показывать публично данные о матчах».\n\n"+
+			"Учти: публичными станут новые игры, уже сыгранные задним числом не появятся. "+
+			"После первой же игры напиши /start снова.",
+		esc(prof.Nickname), medal)
 }
 
 func (a *App) notifyAdmins(chatID, accountID int64, name string) {

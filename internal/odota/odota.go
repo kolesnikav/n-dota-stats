@@ -158,6 +158,38 @@ func (c *Client) RecentMatches(accountID int64) ([]RecentMatch, error) {
 	return out, err
 }
 
+// Profile — публичная карточка игрока. Нужна, чтобы отличить несуществующий
+// аккаунт от того, у которого просто закрыта история матчей.
+type Profile struct {
+	AccountID int64
+	Nickname  string
+	RankTier  int
+	Known     bool
+}
+
+// Profile возвращает карточку игрока.
+func (c *Client) Profile(accountID int64) (Profile, error) {
+	var doc struct {
+		RankTier *int `json:"rank_tier"`
+		Profile  *struct {
+			AccountID   int64  `json:"account_id"`
+			Personaname string `json:"personaname"`
+		} `json:"profile"`
+	}
+	if err := c.get(fmt.Sprintf("/players/%d", accountID), &doc); err != nil {
+		return Profile{}, err
+	}
+	out := Profile{AccountID: accountID}
+	if doc.RankTier != nil {
+		out.RankTier = *doc.RankTier
+	}
+	if doc.Profile != nil && doc.Profile.Personaname != "" {
+		out.Nickname = doc.Profile.Personaname
+		out.Known = true
+	}
+	return out, nil
+}
+
 // Heroes возвращает справочник героев.
 func (c *Client) Heroes() (map[int]string, error) {
 	var rows []struct {
