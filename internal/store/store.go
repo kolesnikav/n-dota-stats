@@ -138,6 +138,12 @@ func Open(path string) (*DB, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("схема: %w", err)
 	}
+	// Досыпаем колонки, появившиеся позже схемы. Ошибка «уже есть» — не ошибка.
+	for _, stmt := range []string{
+		`ALTER TABLE matches ADD COLUMN retry_after INTEGER DEFAULT 0`,
+	} {
+		_, _ = db.Exec(stmt)
+	}
 	return &DB{sql: db}, nil
 }
 
@@ -326,10 +332,17 @@ func (d *DB) LoadScoreboard(matchID int64) ([]byte, bool) {
 	return []byte(s), true
 }
 
-// SetReplayState переводит матч в новое состояние разбора.
+// SetReplayState переводит матч в новое состояние разбора. Неудача — не
+// приговор: матч будет взят снова через полчаса, потому что причина обычно
+// временная (сессия Game Coordinator переподключается, сервис не отвечает).
 func (d *DB) SetReplayState(matchID int64, s ReplayState, errText string) error {
-	_, err := d.sql.Exec(`UPDATE matches SET replay_state=?, replay_error=? WHERE match_id=?`,
-		string(s), errText, matchID)
+	retry := int64(0)
+	if s == ReplayFailed {
+		retry = time.Now().Add(30 * time.Minute).Unix()
+	}
+	_, err := d.sql.Exec(
+		`UPDATE matches SET replay_state=?, replay_error=?, retry_after=? WHERE match_id=?`,
+		string(s), errText, retry, matchID)
 	return err
 }
 
@@ -382,8 +395,11 @@ func (d *DB) LoadReplay(matchID int64) ([]byte, bool) {
 
 // QueuedMatches возвращает матчи, ждущие разбора.
 func (d *DB) QueuedMatches(limit int) ([]int64, error) {
-	rows, err := d.sql.Query(
-		`SELECT match_id FROM matches WHERE replay_state='queued' ORDER BY start_time DESC LIMIT ?`, limit)
+	rows, err := d.sql.Query(`
+		SELECT match_id FROM matches
+		WHERE replay_state = 'queued'
+		   OR (replay_state = 'failed' AND COALESCE(retry_after,0) > 0 AND COALESCE(retry_after,0) < ?)
+		ORDER BY start_time DESC LIMIT ?`, time.Now().Unix(), limit)
 	if err != nil {
 		return nil, err
 	}

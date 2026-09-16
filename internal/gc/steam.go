@@ -37,6 +37,7 @@ type Steam struct {
 	ready    chan struct{}
 	readyOne sync.Once
 	fatal    error
+	live     bool // сессия с Game Coordinator открыта прямо сейчас
 }
 
 // NewSteam собирает клиента. Соединение поднимается отдельно — Start.
@@ -110,19 +111,36 @@ func (s *Steam) loop(ctx context.Context, client *steam.Client, handler *dota2.D
 		case *steam.LoggedOnEvent:
 			s.Log("Steam: вход выполнен, запускаю Dota 2")
 			handler.SetPlaying(true)
-			time.Sleep(2 * time.Second)
-			handler.SayHello()
+			// Здороваться приходится настойчиво: после переподключения
+			// Game Coordinator отвечает не с первой попытки, а без его
+			// приветствия любой запрос падает с «клиент не готов».
+			go func() {
+				for i := 0; i < 10; i++ {
+					time.Sleep(time.Duration(2+i*3) * time.Second)
+					if s.isLive() {
+						return
+					}
+					handler.SayHello()
+				}
+				s.Log("Game Coordinator: не отозвался за десять попыток")
+			}()
 
 		case *steam.LogOnFailedEvent:
 			s.finish(fmt.Errorf("вход отклонён Steam: %v (нужен код Steam Guard?)", e.Result))
 			return
 
 		case *steam.DisconnectedEvent:
+			s.setLive(false)
 			s.Log("Steam: соединение потеряно, переподключаюсь через 15 с")
 			time.Sleep(15 * time.Second)
 			client.Connect()
 
+		case *steam.LoggedOffEvent:
+			s.setLive(false)
+			s.Log("Steam: сессия завершена")
+
 		case *devents.ClientWelcomed:
+			s.setLive(true)
 			s.Log("Game Coordinator: сессия открыта")
 			s.finish(nil)
 
@@ -162,6 +180,18 @@ func guardHint(err error) string {
 		"\nКод живёт недолго, поэтому запускать бота нужно сразу после того, как положишь его в .env"
 }
 
+func (s *Steam) setLive(v bool) {
+	s.mu.Lock()
+	s.live = v
+	s.mu.Unlock()
+}
+
+func (s *Steam) isLive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live
+}
+
 func (s *Steam) finish(err error) {
 	s.readyOne.Do(func() {
 		s.fatal = err
@@ -172,10 +202,13 @@ func (s *Steam) finish(err error) {
 // ReplaySalt спрашивает у Game Coordinator ключ реплея и кластер.
 func (s *Steam) ReplaySalt(matchID int64) (Salt, error) {
 	s.mu.Lock()
-	handler := s.dota
+	handler, live := s.dota, s.live
 	s.mu.Unlock()
 	if handler == nil {
 		return Salt{}, ErrNotConfigured
+	}
+	if !live {
+		return Salt{}, fmt.Errorf("сессия Game Coordinator сейчас закрыта")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

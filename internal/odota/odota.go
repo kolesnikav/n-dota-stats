@@ -86,7 +86,20 @@ func (c *Client) get(path string, out any) error {
 		req.Header.Set("User-Agent", "n-dota-stats/1.0")
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
+			// Таймаут и обрыв — обычное дело для чужого сервиса, пробуем ещё.
+			if attempt < attempts {
+				time.Sleep(retryAfter("", attempt))
+				continue
+			}
 			return err
+		}
+		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+			_ = resp.Body.Close()
+			if attempt >= attempts {
+				return fmt.Errorf("opendota %s: код %d", path, resp.StatusCode)
+			}
+			time.Sleep(retryAfter("", attempt))
+			continue
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait := retryAfter(resp.Header.Get("Retry-After"), attempt)

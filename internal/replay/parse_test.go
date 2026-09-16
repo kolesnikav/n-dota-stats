@@ -50,14 +50,24 @@ func TestParseAgainstOpenDota(t *testing.T) {
 		if ps.ObsKilled != p.ObsKilled {
 			t.Errorf("%s: снято чужих обзорных %d, у OpenDota %d", p.Name(), ps.ObsKilled, p.ObsKilled)
 		}
-		if len(p.LHT) > 10 && len(ps.LHT) > 10 {
-			if diff := ps.LHT[10] - p.LHT[10]; diff > 2 || diff < -2 {
+		// Проверка обязана падать, когда наших данных нет: раньше она их молча
+		// пропускала и не заметила, что у одной из команд кривые пустые.
+		minutes := m.Duration / 60
+		if len(ps.LHT) < minutes {
+			t.Errorf("%s: точек в кривой добиваний %d, а матч идёт %d минут",
+				p.Name(), len(ps.LHT), minutes)
+		}
+		if len(p.LHT) > 10 {
+			if len(ps.LHT) <= 10 {
+				t.Errorf("%s: нет добиваний к 10:00", p.Name())
+			} else if diff := ps.LHT[10] - p.LHT[10]; diff > 2 || diff < -2 {
 				t.Errorf("%s: добиваний к 10:00 %d, у OpenDota %d", p.Name(), ps.LHT[10], p.LHT[10])
 			}
 		}
-		if len(p.GoldT) > 10 && len(ps.GoldT) > 10 {
-			got, want := ps.GoldT[10], p.GoldT[10]
-			if d := got - want; d > want/10 || d < -want/10 {
+		if len(p.GoldT) > 10 {
+			if len(ps.GoldT) <= 10 {
+				t.Errorf("%s: нет золота к 10:00", p.Name())
+			} else if got, want := ps.GoldT[10], p.GoldT[10]; got-want > want/10 || want-got > want/10 {
 				t.Errorf("%s: золота к 10:00 %d, у OpenDota %d", p.Name(), got, want)
 			}
 		}

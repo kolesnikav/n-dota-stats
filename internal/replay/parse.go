@@ -123,12 +123,14 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 	heroByIndex := map[int32]int{}  // индекс сущности героя -> слот
 	heroPos := map[int][2]float64{} // слот -> последняя известная позиция
 	wardsByIndex := map[int32]*Ward{}
+	// Счётчик последней снятой минуты ведётся отдельно на каждую команду:
+	// сущности Radiant и Dire обновляются независимо, и общий счётчик отдавал
+	// минуту той, что успела первой, а вторую оставлял с нулями.
+	lastMinute := map[string]int{"CDOTA_DataRadiant": -1, "CDOTA_DataDire": -1}
 
 	// Использования вардовых предметов из боевого лога. По ним определяется
 	// владелец обзорного варда: у самой сущности ссылки на хозяина нет.
 	var wardUses []wardUse
-	minute := -1
-
 	// Время игры нужно в секундах от гудка, но гудок распознаётся не сразу.
 	// Поэтому события записываются в тиках, а в секунды переводятся в конце —
 	// иначе всё, что случилось до нуля, пришлось бы выбрасывать.
@@ -218,20 +220,22 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			if t < 0 {
 				return nil
 			}
-			if m := t / 60; m > minute {
-				minute = m
-				base := 0
-				if cn == "CDOTA_DataDire" {
-					base = 128
-				}
-				for i := 0; i < 5; i++ {
-					ps := res.player(base + i)
-					pre := fmt.Sprintf("m_vecDataTeam.%04d.", i)
-					ps.GoldT = appendAt(ps.GoldT, minute, intProp(e, pre+"m_iTotalEarnedGold"))
-					ps.XPT = appendAt(ps.XPT, minute, intProp(e, pre+"m_iTotalEarnedXP"))
-					ps.LHT = appendAt(ps.LHT, minute, intProp(e, pre+"m_iLastHitCount"))
-					ps.DNT = appendAt(ps.DNT, minute, intProp(e, pre+"m_iDenyCount"))
-				}
+			minute := t / 60
+			if minute <= lastMinute[cn] {
+				return nil
+			}
+			lastMinute[cn] = minute
+			base := 0
+			if cn == "CDOTA_DataDire" {
+				base = 128
+			}
+			for i := 0; i < 5; i++ {
+				ps := res.player(base + i)
+				pre := fmt.Sprintf("m_vecDataTeam.%04d.", i)
+				ps.GoldT = appendAt(ps.GoldT, minute, intProp(e, pre+"m_iTotalEarnedGold"))
+				ps.XPT = appendAt(ps.XPT, minute, intProp(e, pre+"m_iTotalEarnedXP"))
+				ps.LHT = appendAt(ps.LHT, minute, intProp(e, pre+"m_iLastHitCount"))
+				ps.DNT = appendAt(ps.DNT, minute, intProp(e, pre+"m_iDenyCount"))
 			}
 		}
 		return nil
