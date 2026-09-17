@@ -4,9 +4,10 @@ bot.db-wal
 bot.db-shm
 *.db
 
-# собранные бинарники
+# собранные бинарники любой команды из cmd/
 /n-dota-stats
-/cmd/n-dota-stats/n-dota-stats
+/cmd/*/n-dota-stats
+/demtool
 
 # локальное окружение
 .env
