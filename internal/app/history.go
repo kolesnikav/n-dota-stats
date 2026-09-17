@@ -22,12 +22,12 @@ func (a *App) cmdHistory(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Сначала привяжи аккаунт: /start", nil)
 		return
 	}
-	text, kb, ok := a.historyPage(u.AccountID, 0)
+	text, index, total, ok := a.historyPage(u.AccountID, 0)
 	if !ok {
 		_, _ = a.Bot.Send(chatID, "Матчей пока нет. /backfill — загрузить историю.", nil)
 		return
 	}
-	_, _ = a.Bot.Send(chatID, text, kb)
+	_, _ = a.Bot.Send(chatID, text, historyNav(index, total, ownHistoryData))
 }
 
 // historyCallback перелистывает историю, переписывая то же сообщение.
@@ -40,20 +40,20 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	text, kb, ok := a.historyPage(u.AccountID, index)
+	text, index, total, ok := a.historyPage(u.AccountID, index)
 	if !ok {
 		return
 	}
-	if err := a.Bot.Edit(chatID, msgID, text, kb); err != nil {
+	if err := a.Bot.Edit(chatID, msgID, text, historyNav(index, total, ownHistoryData)); err != nil {
 		a.Log("правка истории у %d: %v", chatID, err)
 	}
 }
 
 // historyPage готовит страницу: сводку матча под номером index и кнопки.
-func (a *App) historyPage(accountID int64, index int) (string, telegram.Keyboard, bool) {
+func (a *App) historyPage(accountID int64, index int) (text string, page, total int, ok bool) {
 	matchID, total, err := a.DB.UserMatchAt(accountID, index)
 	if err != nil || total == 0 || matchID == 0 {
-		return "", nil, false
+		return "", 0, 0, false
 	}
 	if index < 0 {
 		index = 0
@@ -70,32 +70,39 @@ func (a *App) historyPage(accountID int64, index int) (string, telegram.Keyboard
 		var snap analysis.Snapshot
 		if json.Unmarshal(blob, &snap) == nil && len(snap.Lines) > 0 {
 			rep := &Report{Snap: snap, Full: snap.Render(a.DB, false)}
-			return head + rep.Text(), historyKeyboard(index, total), true
+			return head + rep.Text(), index, total, true
 		}
 	}
 	// Снимка нет — матч разобран до того, как их начали хранить. Считаем как
 	// раньше, из матча.
 	rep, err := a.View(accountID, matchID)
 	if err != nil {
-		return fmt.Sprintf("Матч %d не разобрать: %v", matchID, err), historyKeyboard(index, total), true
+		return fmt.Sprintf("Матч %d не разобрать: %v", matchID, err), index, total, true
 	}
-	return head + rep.Text(), historyKeyboard(index, total), true
+	return head + rep.Text(), index, total, true
 }
 
-// historyKeyboard — стрелки и счётчик. Стрелка на краю списка не исчезает, а
+// ownHistoryData — адрес страницы своей истории.
+func ownHistoryData(page int) string { return fmt.Sprintf("h:%d", page) }
+
+// historyNav — стрелки и счётчик. Стрелка на краю списка не исчезает, а
 // перестаёт быть ссылкой: прыгающие кнопки сбивают прицел.
-func historyKeyboard(index, total int) telegram.Keyboard {
-	prev := telegram.Button{Text: "◀", Data: fmt.Sprintf("h:%d", index-1)}
-	next := telegram.Button{Text: "▶", Data: fmt.Sprintf("h:%d", index+1)}
+//
+// Адрес страницы задаётся снаружи: тот же виджет листает и свою историю, и
+// чужую в админке, отличаются они только тем, куда ведут кнопки.
+func historyNav(index, total int, data func(page int) string, extra ...[]telegram.Button) telegram.Keyboard {
+	prev := telegram.Button{Text: "◀", Data: data(index - 1)}
+	next := telegram.Button{Text: "▶", Data: data(index + 1)}
 	if index <= 0 {
-		prev = telegram.Button{Text: "·", Data: "h:0"}
+		prev = telegram.Button{Text: "·", Data: data(0)}
 	}
 	if index >= total-1 {
-		next = telegram.Button{Text: "·", Data: fmt.Sprintf("h:%d", total-1)}
+		next = telegram.Button{Text: "·", Data: data(total - 1)}
 	}
-	return telegram.Keyboard{{
+	kb := telegram.Keyboard{{
 		prev,
-		{Text: fmt.Sprintf("%d/%d", index+1, total), Data: fmt.Sprintf("h:%d", index)},
+		{Text: fmt.Sprintf("%d/%d", index+1, total), Data: data(index)},
 		next,
 	}}
+	return append(kb, extra...)
 }

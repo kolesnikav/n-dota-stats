@@ -201,13 +201,17 @@ func (a *App) adminCallback(chatID, msgID int64, parts []string) {
 		text, kb := usersCard(users, idx, a.DB)
 		_ = a.Bot.Edit(chatID, msgID, text, kb)
 
-	case "g": // игры пользователя
+	case "g": // история пользователя
 		if len(parts) < 4 {
 			return
 		}
 		target, _ := strconv.ParseInt(parts[2], 10, 64)
-		idx, _ := strconv.Atoi(parts[3])
-		a.showUserMatches(chatID, msgID, target, idx)
+		card, _ := strconv.Atoi(parts[3])
+		page := 0
+		if len(parts) > 4 {
+			page, _ = strconv.Atoi(parts[4])
+		}
+		a.showUserHistory(chatID, msgID, target, card, page)
 
 	case "a": // действие
 		if len(parts) < 4 {
@@ -264,31 +268,24 @@ func (a *App) notifyStatus(chatID int64, s store.Status) {
 	}
 }
 
-func (a *App) showUserMatches(chatID, msgID, target int64, idx int) {
+// showUserHistory показывает историю выбранного пользователя тем же виджетом,
+// что и /history: одна сводка на экран, листание стрелками, правка на месте.
+// Список из десяти строк с номерами матчей, который был здесь раньше, не
+// отвечал ни на один вопрос — по нему нельзя было понять, как человек играет.
+func (a *App) showUserHistory(chatID, msgID, target int64, card, page int) {
 	u, ok := a.DB.User(target)
 	if !ok {
 		return
 	}
-	matches, err := a.DB.UserMatches(u.AccountID, 10)
-	if err != nil {
+	back := []telegram.Button{{Text: "назад", Data: fmt.Sprintf("u:p:%d", card)}}
+	title := fmt.Sprintf("<b>Матчи %s</b>\n\n", esc(u.Nickname))
+
+	text, index, total, ok := a.historyPage(u.AccountID, page)
+	if !ok {
+		_ = a.Bot.Edit(chatID, msgID, title+"Пока ничего не разобрано.",
+			telegram.Keyboard{back})
 		return
 	}
-	lines := []string{fmt.Sprintf("<b>Матчи %s</b>", esc(u.Nickname))}
-	if len(matches) == 0 {
-		lines = append(lines, "", "Пока ничего не разобрано.")
-	}
-	for _, m := range matches {
-		outcome := "поражение"
-		if m.Win {
-			outcome = "победа"
-		}
-		role := ""
-		if m.Role.Valid() {
-			role = " · " + m.Role.String()
-		}
-		lines = append(lines, fmt.Sprintf("<code>%d</code> · %s%s · %s",
-			m.MatchID, esc(m.HeroName), role, outcome))
-	}
-	kb := telegram.Keyboard{{{Text: "назад", Data: fmt.Sprintf("u:p:%d", idx)}}}
-	_ = a.Bot.Edit(chatID, msgID, strings.Join(lines, "\n"), kb)
+	data := func(p int) string { return fmt.Sprintf("u:g:%d:%d:%d", target, card, p) }
+	_ = a.Bot.Edit(chatID, msgID, title+text, historyNav(index, total, data, back))
 }
