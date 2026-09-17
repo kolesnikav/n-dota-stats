@@ -437,7 +437,7 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			// Иллюзии носят имя своего героя, поэтому одной проверки имени
 			// мало: удар по иллюзии — не попадание по герою, а урон от
 			// иллюзии — не заслуга игрока. С обоими условиями сходимость с
-			// OpenDota выше всего (124 из 128), хотя и не полная.
+			// OpenDota выше всего: 127 из 128 против 125 без второго условия.
 			if entry.GetIsTargetIllusion() || entry.GetIsAttackerIllusion() {
 				return nil
 			}
@@ -445,8 +445,7 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			if _, isHero := slots[tgt]; !isHero {
 				return nil
 			}
-			att, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
-			slot, ok := slots[att]
+			slot, ok := slots[actor(p, entry)]
 			if !ok {
 				return nil
 			}
@@ -498,7 +497,7 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			return nil
 		}
 		target, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetTargetName()))
-		attacker, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
+		attacker := actor(p, entry)
 		if strings.HasPrefix(target, "npc_dota_neutral_") {
 			if slot, ok := slots[attacker]; ok {
 				res.player(slot).NeutralKills++
@@ -564,6 +563,24 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		sort.Slice(ps.Wards, func(i, j int) bool { return ps.Wards[i].Placed < ps.Wards[j].Placed })
 	}
 	return res, nil
+}
+
+// actor возвращает того, кому засчитывается действие.
+//
+// Атакующий и действующий — разные вещи: подчинённый крип, призванный юнит или
+// медведь Урсы бьют сами, но заслуга принадлежит хозяину. Valve записывает
+// хозяина в damage_source_name, и поле заполнено во всех записях об уроне и
+// смертях — проверено на реплее целиком: 32 500 записей, ни одной без
+// источника. Без этого у игрока с доминатором терялась шестая часть
+// добитых нейтралов.
+func actor(p *manta.Parser, e *mdota.CMsgDOTACombatLogEntry) string {
+	if e.DamageSourceName != nil {
+		if name, ok := p.LookupStringByIndex("CombatLogNames", int32(e.GetDamageSourceName())); ok && name != "" {
+			return name
+		}
+	}
+	name, _ := p.LookupStringByIndex("CombatLogNames", int32(e.GetAttackerName()))
+	return name
 }
 
 // wardUse — момент, когда игрок применил вардовый предмет.
