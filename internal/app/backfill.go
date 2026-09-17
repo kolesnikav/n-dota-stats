@@ -51,6 +51,11 @@ func (a *App) Backfill(chatID, accountID int64, days int, progress func(done, to
 			} else {
 				res.Loaded++
 				res.ByRole[rep.Player.Role]++
+				// Скорборд загружен, но сам по себе он даёт только половину
+				// показателей. Ставим матч в очередь разбора тем же правилом,
+				// что и при обычном наблюдении, иначе загруженная история так
+				// и останется без линий, вардов и стаков.
+				a.maybeQueueReplay(id)
 			}
 		}
 		if progress != nil && (i+1)%15 == 0 {
