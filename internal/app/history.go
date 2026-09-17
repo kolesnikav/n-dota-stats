@@ -1,9 +1,11 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
+	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/telegram"
 )
 
@@ -20,7 +22,7 @@ func (a *App) cmdHistory(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Сначала привяжи аккаунт: /start", nil)
 		return
 	}
-	text, kb, ok := a.historyPage(chatID, u.AccountID, 0)
+	text, kb, ok := a.historyPage(u.AccountID, 0)
 	if !ok {
 		_, _ = a.Bot.Send(chatID, "Матчей пока нет. /backfill — загрузить историю.", nil)
 		return
@@ -38,7 +40,7 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	text, kb, ok := a.historyPage(chatID, u.AccountID, index)
+	text, kb, ok := a.historyPage(u.AccountID, index)
 	if !ok {
 		return
 	}
@@ -48,7 +50,7 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 }
 
 // historyPage готовит страницу: сводку матча под номером index и кнопки.
-func (a *App) historyPage(chatID, accountID int64, index int) (string, telegram.Keyboard, bool) {
+func (a *App) historyPage(accountID int64, index int) (string, telegram.Keyboard, bool) {
 	matchID, total, err := a.DB.UserMatchAt(accountID, index)
 	if err != nil || total == 0 || matchID == 0 {
 		return "", nil, false
@@ -59,11 +61,24 @@ func (a *App) historyPage(chatID, accountID int64, index int) (string, telegram.
 	if index >= total {
 		index = total - 1
 	}
-	rep, err := a.Report(chatID, accountID, matchID)
+	head := fmt.Sprintf("<i>Матч %d из %d</i>\n\n", index+1, total)
+
+	// Сводка берётся из снимка: значения показателей и рейтинг посчитаны, когда
+	// матч разбирали, и с тех пор не меняются. Заново считаются только
+	// сравнения — медиана роли и своё среднее, — потому что они растут.
+	if blob, ok := a.DB.Snapshot(matchID, accountID); ok {
+		var snap analysis.Snapshot
+		if json.Unmarshal(blob, &snap) == nil && len(snap.Lines) > 0 {
+			rep := &Report{Snap: snap, Full: snap.Render(a.DB, false)}
+			return head + rep.Text(), historyKeyboard(index, total), true
+		}
+	}
+	// Снимка нет — матч разобран до того, как их начали хранить. Считаем как
+	// раньше, из матча.
+	rep, err := a.View(accountID, matchID)
 	if err != nil {
 		return fmt.Sprintf("Матч %d не разобрать: %v", matchID, err), historyKeyboard(index, total), true
 	}
-	head := fmt.Sprintf("<i>Матч %d из %d</i>\n\n", index+1, total)
 	return head + rep.Text(), historyKeyboard(index, total), true
 }
 

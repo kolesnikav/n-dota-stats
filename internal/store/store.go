@@ -158,6 +158,7 @@ func Open(path string) (*DB, error) {
 	for _, stmt := range []string{
 		`ALTER TABLE matches ADD COLUMN retry_after INTEGER DEFAULT 0`,
 		`ALTER TABLE matches ADD COLUMN seq_num INTEGER DEFAULT 0`,
+		`ALTER TABLE match_users ADD COLUMN snapshot TEXT`,
 		// Свой корпус перцентилей был ошибкой: медианы и кривые берём у
 		// OpenDota. Таблицы сносим, чтобы не занимать место зря.
 		`DROP TABLE IF EXISTS corpus`,
@@ -451,6 +452,7 @@ type MatchUser struct {
 	Source    dota.Source
 	MessageID int64
 	Predicted []int
+	Snapshot  []byte // сводка матча: значения показателей и пометки, привязанные к матчу
 	Actual    []int
 }
 
@@ -459,13 +461,21 @@ func (d *DB) LinkMatchUser(mu MatchUser, metrics map[string]float64) error {
 	pred, _ := json.Marshal(mu.Predicted)
 	met, _ := json.Marshal(metrics)
 	_, err := d.sql.Exec(`
-		INSERT INTO match_users(match_id,account_id,chat_id,role,role_source,message_id,predicted,metrics)
-		VALUES(?,?,?,?,?,?,?,?)
+		INSERT INTO match_users(match_id,account_id,chat_id,role,role_source,message_id,predicted,metrics,snapshot)
+		VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(match_id,account_id) DO UPDATE SET
 			role=excluded.role, role_source=excluded.role_source,
-			predicted=excluded.predicted, metrics=excluded.metrics`,
+			metrics=excluded.metrics, snapshot=excluded.snapshot,
+			-- Предсказание замораживается, как только пользователь указал
+			-- настоящий топ-3. Иначе повторный показ матча переписал бы его
+			-- нынешними весами, и точность формулы задним числом выглядела бы
+			-- лучше, чем была: сравнивались бы уже обученные веса с ответом,
+			-- на котором они и обучались.
+			predicted=CASE
+				WHEN match_users.actual IS NOT NULL AND match_users.actual NOT IN ('', 'null')
+				THEN match_users.predicted ELSE excluded.predicted END`,
 		mu.MatchID, mu.AccountID, mu.ChatID, int(mu.Role), string(mu.Source), mu.MessageID,
-		string(pred), string(met))
+		string(pred), string(met), string(mu.Snapshot))
 	return err
 }
 
@@ -493,6 +503,18 @@ func (d *DB) SetActual(matchID, accountID int64, slots []int) error {
 }
 
 // Actual возвращает сохранённую разметку.
+// Predicted — топ-3, который выдала формула, когда матч показывали.
+func (d *DB) Predicted(matchID, accountID int64) []int {
+	var s string
+	if d.sql.QueryRow(`SELECT COALESCE(predicted,'') FROM match_users WHERE match_id=? AND account_id=?`,
+		matchID, accountID).Scan(&s) != nil || s == "" {
+		return nil
+	}
+	var out []int
+	_ = json.Unmarshal([]byte(s), &out)
+	return out
+}
+
 func (d *DB) Actual(matchID, accountID int64) []int {
 	var s string
 	if d.sql.QueryRow(`SELECT COALESCE(actual,'') FROM match_users WHERE match_id=? AND account_id=?`,
@@ -1053,4 +1075,14 @@ func (d *DB) UserMatchAt(accountID int64, index int) (matchID int64, total int, 
 		return 0, total, err
 	}
 	return matchID, total, nil
+}
+
+// Snapshot возвращает сохранённую сводку матча.
+func (d *DB) Snapshot(matchID, accountID int64) ([]byte, bool) {
+	var s string
+	if d.sql.QueryRow(`SELECT COALESCE(snapshot,'') FROM match_users WHERE match_id=? AND account_id=?`,
+		matchID, accountID).Scan(&s) != nil || s == "" {
+		return nil, false
+	}
+	return []byte(s), true
 }

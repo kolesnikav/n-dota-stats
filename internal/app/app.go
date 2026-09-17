@@ -98,13 +98,21 @@ func (a *App) LoadMatch(matchID int64, forAccount int64) (*dota.Match, error) {
 	return m, nil
 }
 
-// Report считает сводку и сохраняет связь матча с пользователем.
-func (a *App) Report(chatID, accountID, matchID int64) (*Report, error) {
+// View считает сводку, ничего не записывая. Нужен там, где сводку только
+// показывают — например при листании истории: пролистать сто матчей не должно
+// означать сто записей в базу и сто перезаписей того, что формула когда-то
+// предсказала.
+func (a *App) View(accountID, matchID int64) (*Report, error) {
 	m, err := a.LoadMatch(matchID, accountID)
 	if err != nil {
 		return nil, err
 	}
-	rep, err := a.Build(m, accountID)
+	return a.Build(m, accountID)
+}
+
+// Report считает сводку и сохраняет связь матча с пользователем.
+func (a *App) Report(chatID, accountID, matchID int64) (*Report, error) {
+	rep, err := a.View(accountID, matchID)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +123,10 @@ func (a *App) Report(chatID, accountID, matchID int64) (*Report, error) {
 		}
 		predicted = append(predicted, s.Player.Slot)
 	}
+	blob, err := json.Marshal(rep.Snap)
+	if err != nil {
+		a.Log("снимок матча %d: %v", matchID, err)
+	}
 	err = a.DB.LinkMatchUser(store.MatchUser{
 		MatchID:   matchID,
 		AccountID: accountID,
@@ -122,6 +134,7 @@ func (a *App) Report(chatID, accountID, matchID int64) (*Report, error) {
 		Role:      rep.Player.Role,
 		Source:    rep.Player.RoleSource,
 		Predicted: predicted,
+		Snapshot:  blob,
 	}, rep.Metric)
 	if err != nil {
 		a.Log("связь матча %d: %v", matchID, err)

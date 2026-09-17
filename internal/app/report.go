@@ -25,6 +25,7 @@ type Report struct {
 	Place  int
 	Full   []analysis.Line
 	Metric map[string]float64 // числовые значения показателей для истории
+	Snap   analysis.Snapshot  // то, что кладётся в базу
 }
 
 // Build считает всё, что нужно для сводки.
@@ -38,38 +39,42 @@ func (a *App) Build(m *dota.Match, accountID int64) (*Report, error) {
 		weights = w
 	}
 	ranked := mvp.Rank(m, weights)
+	snap := analysis.Snap(m, p)
+	place := mvp.Place(ranked, p)
+	snap.Place, snap.Players = place, len(ranked)
+	for i, sc := range ranked {
+		if sc.Player == p {
+			snap.Score = sc.Score
+		}
+		if i < 3 {
+			snap.Top = append(snap.Top, analysis.SnapTop{
+				Name: sc.Player.Name(), Side: sc.Player.SideName(),
+				Score: sc.Score, Me: sc.Player == p,
+			})
+		}
+	}
 	rep := &Report{
 		Match:  m,
 		Player: p,
 		Ranked: ranked,
-		Place:  mvp.Place(ranked, p),
-		Full:   analysis.Build(m, p, a.DB, false),
-		Metric: map[string]float64{},
-	}
-	ctx := &analysis.Ctx{Match: m, Player: p, Opponent: analysis.LaneOpponent(m, p), History: a.DB}
-	for _, metric := range analysis.MetricsFor(p.Role, p.HeroID, false) {
-		if metric.Needs > m.Detail {
-			continue
-		}
-		if v, ok := metric.Calc(ctx); ok && v.Has {
-			rep.Metric[metric.Key] = v.Num
-		}
+		Place:  place,
+		Snap:   snap,
+		Full:   snap.Render(a.DB, false),
+		Metric: snap.Numbers(),
 	}
 	return rep, nil
 }
 
 func (r *Report) header() []string {
-	m, p := r.Match, r.Player
 	outcome := "Поражение"
-	if p.Win {
+	if r.Snap.Win {
 		outcome = "Победа"
 	}
-	line := fmt.Sprintf("<b>%s</b> · %s", outcome, clock(m.Duration))
-	head := []string{line}
+	head := []string{fmt.Sprintf("<b>%s</b> · %s", outcome, clock(r.Snap.Duration))}
 
 	second := fmt.Sprintf("%s · %s · %d/%d/%d",
-		esc(p.Name()), esc(p.Role.String()), p.Kills, p.Deaths, p.Assists)
-	if medal := dota.RankTierName(p.RankTier); medal != "" {
+		esc(r.Snap.Hero), esc(r.Snap.Role.String()), r.Snap.Kills, r.Snap.Deaths, r.Snap.Assists)
+	if medal := dota.RankTierName(r.Snap.RankTier); medal != "" {
 		second += " · " + medal
 	}
 	return append(head, second)
@@ -135,47 +140,35 @@ func (r *Report) body() []string {
 }
 
 func (r *Report) top3() []string {
+	if len(r.Snap.Top) == 0 {
+		return nil
+	}
 	out := []string{"", "<b>ЛУЧШИЕ ПО МОЕЙ ФОРМУЛЕ</b>"}
-	for i, s := range r.Ranked {
-		if i >= 3 {
-			break
-		}
+	for i, t := range r.Snap.Top {
 		mark := ""
-		if s.Player == r.Player {
+		if t.Me {
 			mark = " ← ты"
 		}
 		out = append(out, fmt.Sprintf("%d. %s · %s · %.0f%s",
-			i+1, esc(s.Player.Name()), s.Player.SideName(), s.Score*100, mark))
+			i+1, esc(t.Name), t.Side, t.Score*100, mark))
 	}
-	if r.Place > 3 {
-		row := fmt.Sprintf("Ты — <b>%d-е место</b> из %d", r.Place, len(r.Ranked))
+	if r.Snap.Place > 3 {
+		row := fmt.Sprintf("Ты — <b>%d-е место</b> из %d", r.Snap.Place, r.Snap.Players)
 		// Цифра нужна всегда, а не только когда попал в тройку: по ней видно,
 		// отстал ты на волос или вдвое.
-		if s, ok := r.own(); ok {
-			row += fmt.Sprintf(" · <b>%.0f</b>", s.Score*100)
-		}
+		row += fmt.Sprintf(" · <b>%.0f</b>", r.Snap.Score*100)
 		out = append(out, row)
 	}
 	return out
 }
 
-// own находит собственную строку в ранжировании.
-func (r *Report) own() (mvp.Scored, bool) {
-	for _, s := range r.Ranked {
-		if s.Player == r.Player {
-			return s, true
-		}
-	}
-	return mvp.Scored{}, false
-}
-
 func (r *Report) footer() []string {
 	roleNote := "роль посчитана"
-	if r.Player.RoleSource == dota.SourceManual {
+	if r.Snap.RoleManual {
 		roleNote = "роль указана тобой"
 	}
-	tail := fmt.Sprintf("<i>Матч %d · %s</i>", r.Match.ID, roleNote)
-	if r.Match.Detail < dota.DetailMeta {
+	tail := fmt.Sprintf("<i>Матч %d · %s</i>", r.Snap.MatchID, roleNote)
+	if r.Snap.Partial {
 		tail += "\n<i>Реплей ещё не разобран — часть строк появится позже.</i>"
 	}
 	return []string{"", tail}
@@ -192,7 +185,7 @@ func (r *Report) Text() string {
 
 // Keyboard — кнопки под сводкой.
 func (r *Report) Keyboard() telegram.Keyboard {
-	id := strconv.FormatInt(r.Match.ID, 10)
+	id := strconv.FormatInt(r.Snap.MatchID, 10)
 	return telegram.Keyboard{
 		{{Text: "сменить роль", Data: "r:" + id}},
 	}

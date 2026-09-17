@@ -562,63 +562,68 @@ func LaneOpponent(m *dota.Match, p *dota.Player) *dota.Player {
 //
 // Порядок намеренный: медиана роли понятнее перцентиля, своя история важнее
 // чужого перцентиля. Больше двух пометок строка не держит — становится нечитаемой.
-func (m Metric) notes(c *Ctx, v Value) []string {
-	order := []CompareKind{CompareRoleMedian, CompareOwnHistory, CompareLaneOpponent, CompareHeroPercentile}
-	want := map[CompareKind]bool{}
-	for _, k := range m.Compare {
-		want[k] = true
-	}
+// Пометки делятся на два вида, и это деление не косметическое.
+//
+// Привязанные к матчу — перцентиль по герою и соперник по линии — вычислимы
+// только там, где есть сам матч, и больше не меняются. Их место в снимке.
+//
+// Меняющиеся — медиана роли и своё среднее — зависят от того, что накопилось
+// снаружи: медианы обновляются раз в неделю, своё среднее растёт с каждой
+// игрой. Их считают заново при каждом показе.
+
+// fixedNotes — пометки, привязанные к матчу.
+func (m Metric) fixedNotes(c *Ctx, v Value) []string {
 	var out []string
-	for _, kind := range order {
-		if !want[kind] {
-			continue
+	if m.compares(CompareLaneOpponent) && c.Opponent != nil && v.Has {
+		oc := &Ctx{Match: c.Match, Player: c.Opponent, History: c.History}
+		if ov, ok := m.Calc(oc); ok && ov.Has {
+			out = append(out, fmt.Sprintf("у %s — %s", c.Opponent.Name(), ov.Text))
 		}
-		if len(out) >= 3 {
-			break
+	}
+	if m.compares(CompareHeroPercentile) && m.Bench != "" {
+		if pct, ok := c.Player.Benchmarks[m.Bench]; ok {
+			// Перцентиль везде читается одинаково: «лучше стольких-то
+			// процентов игроков на этом герое». Для смертей это значит
+			// перевернуть шкалу, иначе высокая цифра выглядела бы похвалой.
+			if m.Lower {
+				pct = 1 - pct
+			}
+			out = append(out, fmt.Sprintf("лучше %d%% на герое", int(pct*100+0.5)))
 		}
-		switch kind {
-		case CompareHeroPercentile:
-			if m.Bench == "" {
-				continue
-			}
-			if pct, ok := c.Player.Benchmarks[m.Bench]; ok {
-				// Перцентиль везде читается одинаково: «лучше стольких-то
-				// процентов игроков на этом герое». Для смертей это значит
-				// перевернуть шкалу, иначе высокая цифра выглядела бы похвалой.
-				if m.Lower {
-					pct = 1 - pct
-				}
-				out = append(out, fmt.Sprintf("лучше %d%% на герое", int(pct*100+0.5)))
-			}
-		case CompareRoleMedian:
-			if med, ok := RoleMedian(c.Player.Role, m.Key); ok && v.Has {
-				out = append(out, "медиана "+m.fmtNum(med))
-			}
-		case CompareOwnHistory:
-			if c.History == nil || c.Player.AccountID == 0 || !v.Has {
-				continue
-			}
-			avg, games, label, ok := m.ownAverage(c)
-			if ok {
-				// В разделе, названном по герою, имя героя в пометке лишнее.
-				if m.HeroSpecific() {
-					label = "твоё среднее"
-				}
-				note := label + " " + m.fmtNum(avg)
-				if games < 10 {
-					note += fmt.Sprintf(" (%s)", plural(games, "игра", "игры", "игр"))
-				}
-				out = append(out, note)
-			}
-		case CompareLaneOpponent:
-			if c.Opponent == nil || !v.Has {
-				continue
-			}
-			oc := &Ctx{Match: c.Match, Player: c.Opponent, History: c.History}
-			if ov, ok := m.Calc(oc); ok && ov.Has {
-				out = append(out, fmt.Sprintf("у %s — %s", c.Opponent.Name(), ov.Text))
-			}
+	}
+	return out
+}
+
+// movingNotes — пометки, которые пересчитываются при каждом показе.
+func (m Metric) movingNotes(c *Ctx, v Value) []string {
+	var out []string
+	if m.compares(CompareRoleMedian) {
+		if med, ok := RoleMedian(c.Player.Role, m.Key); ok && v.Has {
+			out = append(out, "медиана "+m.fmtNum(med))
 		}
+	}
+	if m.compares(CompareOwnHistory) && c.History != nil && c.Player.AccountID != 0 && v.Has {
+		if avg, games, label, ok := m.ownAverage(c); ok {
+			// В разделе, названном по герою, имя героя в пометке лишнее.
+			if m.HeroSpecific() {
+				label = "твоё среднее"
+			}
+			note := label + " " + m.fmtNum(avg)
+			if games < 10 {
+				note += fmt.Sprintf(" (%s)", plural(games, "игра", "игры", "игр"))
+			}
+			out = append(out, note)
+		}
+	}
+	return out
+}
+
+// notes собирает пометки в привычном порядке: сначала меняющиеся, затем
+// привязанные к матчу, не больше трёх.
+func mergeNotes(moving, fixed []string) []string {
+	out := append(append([]string{}, moving...), fixed...)
+	if len(out) > 3 {
+		out = out[:3]
 	}
 	return out
 }
@@ -738,39 +743,20 @@ func (m Metric) verdict(c *Ctx, v Value) int {
 // Build считает показатели роли игрока и возвращает готовые строки.
 // Решающие для роли показатели переносятся в раздел «Главное» и идут первыми.
 func Build(m *dota.Match, p *dota.Player, hist History, short bool) []Line {
-	c := &Ctx{Match: m, Player: p, Opponent: LaneOpponent(m, p), History: hist}
-	var out []Line
-	type ranked struct {
-		idx  int
-		line Line
-	}
-	var top []ranked
-	for _, metric := range MetricsFor(p.Role, p.HeroID, short) {
-		if metric.Needs > m.Detail {
-			continue
-		}
-		v, ok := metric.Calc(c)
-		if !ok || v.Text == "" {
-			continue
-		}
-		line := Line{
-			Group:   metric.GroupFor(p),
-			Label:   metric.Label,
-			Value:   v.Text,
-			Notes:   metric.notes(c, v),
-			Verdict: metric.verdict(c, v),
-		}
-		if idx, ok := priorityIndex(p.Role, metric.Key); ok && !metric.HeroSpecific() {
-			line.Group = "Главное"
-			top = append(top, ranked{idx, line})
-			continue
-		}
-		out = append(out, line)
-	}
+	return Snap(m, p).Render(hist, short)
+}
+
+// rankedLine — строка, которую надо поднять в раздел «Главное».
+type rankedLine struct {
+	idx  int
+	line Line
+}
+
+func sortRanked(top []rankedLine) []Line {
 	sort.Slice(top, func(i, j int) bool { return top[i].idx < top[j].idx })
-	head := make([]Line, 0, len(top))
+	out := make([]Line, 0, len(top))
 	for _, r := range top {
-		head = append(head, r.line)
+		out = append(out, r.line)
 	}
-	return append(head, out...)
+	return out
 }

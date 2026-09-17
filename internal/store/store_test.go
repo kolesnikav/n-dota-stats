@@ -261,3 +261,43 @@ func TestUserMatchAt(t *testing.T) {
 		t.Errorf("у постороннего аккаунта нашлось %d матчей", total)
 	}
 }
+
+// Предсказание формулы не должно переписываться после того, как пользователь
+// указал настоящий топ-3: иначе точность задним числом выглядит лучше, чем была.
+func TestPredictedFrozenAfterMarking(t *testing.T) {
+	db := open(t)
+	const (
+		match = int64(500)
+		acc   = int64(9)
+	)
+	m := &dota.Match{ID: match, StartTime: 1, Duration: 2000}
+	if err := db.SaveMatch(m, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	link := func(pred []int) {
+		t.Helper()
+		if err := db.LinkMatchUser(store.MatchUser{
+			MatchID: match, AccountID: acc, ChatID: 1, Role: dota.RoleMid, Predicted: pred,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	link([]int{1, 2, 3})
+	// До разметки предсказание обновляется: разбор реплея мог его уточнить.
+	link([]int{4, 5, 6})
+	if got := db.Predicted(match, acc); len(got) != 3 || got[0] != 4 {
+		t.Fatalf("до разметки предсказание не обновилось: %v", got)
+	}
+
+	if err := db.SetActual(match, acc, []int{7, 8, 9}); err != nil {
+		t.Fatal(err)
+	}
+	link([]int{0, 0, 0})
+	if got := db.Predicted(match, acc); len(got) != 3 || got[0] != 4 {
+		t.Errorf("после разметки предсказание переписано: %v", got)
+	}
+	if got := db.Actual(match, acc); len(got) != 3 || got[0] != 7 {
+		t.Errorf("разметка потеряна: %v", got)
+	}
+}
