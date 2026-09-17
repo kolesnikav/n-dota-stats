@@ -35,6 +35,7 @@ func main() {
 		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
 		reparse  = flag.Int("reparse", 0, "попросить разобрать реплеи матчей за N дней и перечитать их")
 		gcTest   = flag.Int64("gc-test", 0, "проверить цепочку: ключ реплея, метаданные, разбор — и выйти")
+		resnap   = flag.Bool("snapshots", false, "пересчитать сводки всех матчей и выйти")
 		medians  = flag.Bool("medians", false, "пересчитать медианы ролей по OpenDota и выйти")
 		verify   = flag.Int64("verify", 0, "сверить свой разбор матча с данными OpenDota и выйти")
 		demPath  = flag.String("dem", "", "готовый файл реплея для --verify (иначе качается через GC)")
@@ -169,6 +170,14 @@ func main() {
 		fmt.Println()
 		fmt.Println(strip(res.Text()))
 		fmt.Printf("заняло: %s\n", res.Elapsed.Round(time.Second))
+		return
+	}
+
+	if *resnap {
+		if err := rebuildSnapshots(db, source, od); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -472,4 +481,44 @@ func printMedians(db *store.DB) {
 		}
 		fmt.Println()
 	}
+}
+
+// rebuildSnapshots пересчитывает сводки всех матчей и кладёт их в базу.
+//
+// Нужен один раз после того, как снимки появились: матчи, разобранные раньше,
+// хранят только числа, и история по ним считалась бы по-старому.
+func rebuildSnapshots(db *store.DB, source app.MatchSource, od *odota.Client) error {
+	rows, err := db.AllMatchUsers()
+	if err != nil {
+		return err
+	}
+	a := app.New(db, nil, source, od)
+	started := time.Now()
+	var done, failed int
+	for i, mu := range rows {
+		if _, err := a.Report(mu.ChatID, mu.AccountID, mu.MatchID); err != nil {
+			failed++
+			fmt.Printf("  матч %d, аккаунт %d: %v\n", mu.MatchID, mu.AccountID, err)
+		} else {
+			done++
+		}
+		if (i+1)%25 == 0 {
+			fmt.Printf("  %d из %d\n", i+1, len(rows))
+		}
+	}
+	fmt.Printf("сводок пересчитано: %d · не удалось: %d · заняло %s\n",
+		done, failed, time.Since(started).Round(time.Second))
+
+	var without int
+	for _, mu := range rows {
+		if _, ok := db.Snapshot(mu.MatchID, mu.AccountID); !ok {
+			without++
+		}
+	}
+	if without > 0 {
+		fmt.Printf("осталось без сводки: %d\n", without)
+	} else {
+		fmt.Println("сводка есть у каждого матча")
+	}
+	return nil
 }

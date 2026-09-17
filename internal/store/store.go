@@ -1086,3 +1086,26 @@ func (d *DB) Snapshot(matchID, accountID int64) ([]byte, bool) {
 	}
 	return []byte(s), true
 }
+
+// AllMatchUsers возвращает все связи «матч — пользователь». Нужен для разовых
+// проходов по всей истории: пересчёта сводок и проверок.
+func (d *DB) AllMatchUsers() ([]MatchUser, error) {
+	rows, err := d.sql.Query(`
+		SELECT mu.match_id, mu.account_id, mu.chat_id
+		FROM match_users mu
+		JOIN matches m ON m.match_id = mu.match_id
+		ORDER BY m.start_time`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MatchUser
+	for rows.Next() {
+		var mu MatchUser
+		if err := rows.Scan(&mu.MatchID, &mu.AccountID, &mu.ChatID); err != nil {
+			return nil, err
+		}
+		out = append(out, mu)
+	}
+	return out, rows.Err()
+}
