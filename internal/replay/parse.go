@@ -74,6 +74,13 @@ type PlayerStats struct {
 	Wards     []Ward
 	Deaths    []Death
 
+	// ItemUses и AbilityUses — сколько раз применён предмет или способность,
+	// HeroHits — сколько применений способности задело героя. Всё по боевому
+	// логу: в сущностях этого нет, а раньше приходилось брать у OpenDota.
+	ItemUses    map[string]int
+	AbilityUses map[string]int
+	HeroHits    map[string]int
+
 	// NeutralKills — убито нейтральных крипов, BuybackCount — выкупов.
 	// Считаются по боевому логу: в сущностях их нет.
 	NeutralKills int
@@ -125,6 +132,9 @@ type Totals struct {
 	SmokesUsed  int
 	TowerKills  int
 	RoshanKills int
+
+	WisdomShrines int
+	LotusesTaken  int
 
 	TeamfightParticipation float64
 	RankTier               int
@@ -389,15 +399,71 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 	p.Callbacks.OnCMsgDOTACombatLogEntry(func(entry *mdota.CMsgDOTACombatLogEntry) error {
 		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_ITEM {
 			inflictor, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetInflictorName()))
+			att, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
+			slot, ok := slots[att]
+			if !ok {
+				return nil
+			}
+			ps := res.player(slot)
+			if ps.ItemUses == nil {
+				ps.ItemUses = map[string]int{}
+			}
+			// Ключ без приставки item_: так его называет OpenDota, и так же
+			// он записан в реестре показателей.
+			ps.ItemUses[strings.TrimPrefix(inflictor, "item_")]++
 			switch inflictor {
 			case "item_ward_observer", "item_ward_sentry", "item_ward_dispenser":
-			default:
+				wardUses = append(wardUses, wardUse{Time: tick(), Slot: slot})
+			}
+			return nil
+		}
+		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_ABILITY {
+			att, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
+			slot, ok := slots[att]
+			if !ok {
+				return nil
+			}
+			inflictor, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetInflictorName()))
+			ps := res.player(slot)
+			if ps.AbilityUses == nil {
+				ps.AbilityUses = map[string]int{}
+			}
+			ps.AbilityUses[inflictor]++
+			return nil
+		}
+		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_DAMAGE {
+			// Попадание по герою: считаем только урон героя по герою и только
+			// от способности — обычные атаки нам не нужны.
+			// Иллюзии носят имя своего героя, поэтому одной проверки имени
+			// мало: удар по иллюзии — не попадание по герою, а урон от
+			// иллюзии — не заслуга игрока. С обоими условиями сходимость с
+			// OpenDota выше всего (124 из 128), хотя и не полная.
+			if entry.GetIsTargetIllusion() || entry.GetIsAttackerIllusion() {
+				return nil
+			}
+			tgt, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetTargetName()))
+			if _, isHero := slots[tgt]; !isHero {
 				return nil
 			}
 			att, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
-			if slot, ok := slots[att]; ok {
-				wardUses = append(wardUses, wardUse{Time: tick(), Slot: slot})
+			slot, ok := slots[att]
+			if !ok {
+				return nil
 			}
+			// Ключи приводим к виду, принятом у OpenDota: предметы без
+			// приставки item_, урон без источника (обычная атака) — "null".
+			// Иначе одни и те же величины лежали бы под разными именами.
+			inflictor := "null"
+			if entry.InflictorName != nil {
+				if name, ok := p.LookupStringByIndex("CombatLogNames", int32(entry.GetInflictorName())); ok && name != "" {
+					inflictor = strings.TrimPrefix(name, "item_")
+				}
+			}
+			ps := res.player(slot)
+			if ps.HeroHits == nil {
+				ps.HeroHits = map[string]int{}
+			}
+			ps.HeroHits[inflictor]++
 			return nil
 		}
 		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_BUYBACK {
@@ -646,6 +712,17 @@ func (r *Result) Apply(m *dota.Match) int {
 			p.RunePickups = t.RunePickups
 			p.NeutralKills = ps.NeutralKills
 			p.Buybacks = ps.BuybackCount
+			p.WisdomShrines = t.WisdomShrines
+			p.LotusesTaken = t.LotusesTaken
+			if len(ps.ItemUses) > 0 {
+				p.ItemUses = ps.ItemUses
+			}
+			if len(ps.AbilityUses) > 0 {
+				p.AbilityUses = ps.AbilityUses
+			}
+			if len(ps.HeroHits) > 0 {
+				p.HeroHits = ps.HeroHits
+			}
 			if lane, role := ps.Lane(p.IsRadiant); lane > 0 {
 				p.Lane, p.LaneRole = lane, role
 			}
@@ -682,6 +759,8 @@ func readTeamTotals(e *manta.Entity, pre string, t *Totals) {
 	t.SmokesUsed = intProp(e, pre+"m_iSmokesUsed")
 	t.TowerKills = intProp(e, pre+"m_iTowerKills")
 	t.RoshanKills = intProp(e, pre+"m_iRoshanKills")
+	t.WisdomShrines = intProp(e, pre+"m_iWisdomShrinesTaken")
+	t.LotusesTaken = intProp(e, pre+"m_iLotusesTaken")
 	t.HeroDamage = int(floatProp(e, pre+"m_flHeroDamage"))
 	t.TowerDamage = int(floatProp(e, pre+"m_flTowerDamage"))
 	t.Healing = int(floatProp(e, pre+"m_fHealing"))

@@ -75,6 +75,18 @@ var VerifyFields = []Field{
 	{Key: "buybacks", Label: "выкупы",
 		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.BuybackCount) },
 		Theirs:   func(p *dota.Player) float64 { return float64(p.Buybacks) }},
+	{Key: "tp_uses", Label: "использовано TP",
+		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.ItemUses["tpscroll"]) },
+		Theirs:   func(p *dota.Player) float64 { return float64(p.ItemUses["tpscroll"]) }},
+	{Key: "smokes", Label: "смоуки",
+		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.ItemUses["smoke_of_deceit"]) },
+		Theirs:   func(p *dota.Player) float64 { return float64(p.ItemUses["smoke_of_deceit"]) }},
+	{Key: "shrines", Label: "алтари мудрости",
+		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.Totals.WisdomShrines) },
+		Theirs:   func(p *dota.Player) float64 { return float64(p.WisdomShrines) }},
+	{Key: "lotuses", Label: "лотосы",
+		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.Totals.LotusesTaken) },
+		Theirs:   func(p *dota.Player) float64 { return float64(p.LotusesTaken) }},
 	{Key: "gpm", Label: "золото в минуту", Tolerance: 0.02,
 		Ours:   func(t *replay.Totals, mins float64) float64 { return float64(t.Gold) / mins },
 		Theirs: func(p *dota.Player) float64 { return float64(p.GPM) }},
@@ -186,6 +198,39 @@ func allTheirsZero(ref *dota.Match, res *replay.Result, f Field) bool {
 		}
 	}
 	return theirsSum == 0 && oursSum != 0
+}
+
+// VerifyAbilities сверяет счёт применений способностей и попаданий по героям.
+// Это отдельная проверка: величин тут не две, а по одной на каждую способность
+// каждого игрока, и смотреть надо на долю совпадений.
+func VerifyAbilities(ref *dota.Match, res *replay.Result) (agree, total int, wrong []string) {
+	for _, p := range ref.Players {
+		ps, ok := res.Players[p.Slot]
+		if !ok {
+			continue
+		}
+		for ability, theirs := range p.AbilityUses {
+			ours := ps.AbilityUses[ability]
+			total++
+			if ours == theirs {
+				agree++
+				continue
+			}
+			wrong = append(wrong, fmt.Sprintf("%-16s %-32s применений: у нас %d · у них %d",
+				p.Name(), ability, ours, theirs))
+		}
+		for ability, theirs := range p.HeroHits {
+			ours := ps.HeroHits[ability]
+			total++
+			if ours == theirs {
+				agree++
+				continue
+			}
+			wrong = append(wrong, fmt.Sprintf("%-16s %-32s попаданий:  у нас %d · у них %d",
+				p.Name(), ability, ours, theirs))
+		}
+	}
+	return agree, total, wrong
 }
 
 // VerifyLanes сверяет определение линии: это не величина, а раскладка, и

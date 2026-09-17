@@ -174,6 +174,8 @@ type Player struct {
 	NeutralKills           int
 	Buybacks               int
 	RunePickups            int
+	WisdomShrines          int // взято алтарей мудрости
+	LotusesTaken           int // собрано лотосов
 	Stuns                  float64
 	TeamfightParticipation float64
 	LaneEfficiencyPct      int

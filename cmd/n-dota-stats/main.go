@@ -405,6 +405,16 @@ func runVerify(od *odota.Client, matchID int64, demPath string) error {
 	}
 	v := app.Verify(matchID, ref, res)
 	fmt.Print(v.Text())
+	if a, t, wrong := app.VerifyAbilities(ref, res); t > 0 {
+		fmt.Printf("  %-20s совпало %d из %d\n", "способности", a, t)
+		for i, w := range wrong {
+			if i >= 12 {
+				fmt.Printf("      ... ещё %d\n", len(wrong)-i)
+				break
+			}
+			fmt.Printf("      %s\n", w)
+		}
+	}
 	agree, total, wrong := app.VerifyLanes(ref, res)
 	if total > 0 {
 		fmt.Printf("  %-20s совпало %d из %d\n", "линия", agree, total)

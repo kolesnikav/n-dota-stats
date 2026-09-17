@@ -398,7 +398,7 @@ var Registry = []Metric{
 	},
 	{
 		Key: "tp", Group: "Карта", Label: "Использовано TP", Roles: supports,
-		From: "разбор OpenDota", Needs: dota.DetailScoreboard, Compare: []CompareKind{CompareOwnHistory},
+		From: "реплей", Needs: dota.DetailScoreboard, Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			n := c.Player.ItemUses["tpscroll"]
 			if n == 0 {
@@ -422,6 +422,32 @@ var Registry = []Metric{
 				return none()
 			}
 			return num(float64(best), "%s", clock(best))
+		},
+	},
+	{
+		// Алтари и лотосы берут все роли, поэтому не ограничиваем: строка сама
+		// не покажется, если игрок не взял ни одного.
+		Key: "shrines", Group: "Карта", Label: "Алтари мудрости", Roles: all,
+		From: "реплей", Needs: dota.DetailReplay,
+		Compare: []CompareKind{CompareOwnHistory},
+		Calc: func(c *Ctx) (Value, bool) {
+			n := c.Player.WisdomShrines
+			if n == 0 {
+				return none()
+			}
+			return num(float64(n), "%d", n)
+		},
+	},
+	{
+		Key: "lotuses", Group: "Карта", Label: "Лотосы", Roles: all,
+		From: "реплей", Needs: dota.DetailReplay,
+		Compare: []CompareKind{CompareOwnHistory},
+		Calc: func(c *Ctx) (Value, bool) {
+			n := c.Player.LotusesTaken
+			if n == 0 {
+				return none()
+			}
+			return num(float64(n), "%d", n)
 		},
 	},
 	{
@@ -462,9 +488,7 @@ func priorityIndex(role dota.Role, key string) (int, bool) {
 func skillshot(key, label string, heroID int, ability string) Metric {
 	return Metric{
 		Key: key, Label: label, Roles: all, Heroes: []int{heroID},
-		// Попадания считает только разбор OpenDota: своего счёта применений
-		// способностей и попаданий по героям у нас пока нет.
-		From: "разбор OpenDota", Needs: dota.DetailScoreboard, Unit: "%",
+		From: "реплей", Needs: dota.DetailScoreboard, Unit: "%",
 		Compare: []CompareKind{CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
 			casts := c.Player.AbilityUses[ability]
