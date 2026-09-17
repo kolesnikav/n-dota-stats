@@ -89,15 +89,27 @@ func TestPercentileOutsideCurve(t *testing.T) {
 	}
 }
 
-// Apply не должен затирать перцентили, пришедшие из источника готовыми.
-func TestApplyKeepsExistingBenchmarks(t *testing.T) {
+// Своя кривая важнее готового перцентиля из OpenDota: считаем сами.
+func TestApplyOverridesSourceBenchmarks(t *testing.T) {
 	c := loadCurves(t)
 	m, _ := fixture.Match8999344582()
 	ns := m.FindByHero("Night Stalker")
-	before := ns.Benchmarks["gold_per_min"]
+	ns.Benchmarks["gold_per_min"] = 0.999 // заведомо чужое значение
 	benchmarks.Apply(c, m)
-	if ns.Benchmarks["gold_per_min"] != before {
-		t.Error("готовые перцентили перезаписаны")
+	if ns.Benchmarks["gold_per_min"] == 0.999 {
+		t.Error("перцентиль остался чужим, хотя своя кривая есть")
+	}
+}
+
+// А там, где своей кривой нет, чужое значение должно уцелеть.
+func TestApplyKeepsUncoveredMetrics(t *testing.T) {
+	c := loadCurves(t)
+	m, _ := fixture.Match8999344582()
+	ns := m.FindByHero("Night Stalker")
+	ns.Benchmarks["stuns_per_min"] = 0.42 // метрики нет в Metrics
+	benchmarks.Apply(c, m)
+	if ns.Benchmarks["stuns_per_min"] != 0.42 {
+		t.Error("метрика без своей кривой потеряна")
 	}
 }
 

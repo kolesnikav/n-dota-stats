@@ -39,6 +39,18 @@ func HeroName(id int) string {
 	return "герой " + strconv.Itoa(id)
 }
 
+// HeroIDs возвращает все известные идентификаторы героев.
+func HeroIDs() []int {
+	HeroName(0) // гарантируем инициализацию
+	heroesMu.RLock()
+	defer heroesMu.RUnlock()
+	out := make([]int, 0, len(heroNames))
+	for id := range heroNames {
+		out = append(out, id)
+	}
+	return out
+}
+
 // SetHeroNames обновляет справочник героев (например, после нового патча).
 func SetHeroNames(m map[int]string) {
 	if len(m) == 0 {
@@ -162,6 +174,9 @@ type Player struct {
 	Stuns                  float64
 	TeamfightParticipation float64
 	LaneEfficiencyPct      int
+	// Abandoned — игрок бросил игру. Такие матчи в корпус перцентилей не
+	// берём: показатели остальных девяти в них перекошены.
+	Abandoned bool
 
 	GoldT           []int // по минутам, нарастающим итогом
 	XPT             []int

@@ -79,17 +79,21 @@ func Raw(m *dota.Match, p *dota.Player) map[string]float64 {
 }
 
 // Apply заполняет перцентили всем игрокам матча из снимка кривых.
-// Уже заполненные значения (например, пришедшие готовыми из OpenDota) не трогаем.
+//
+// Своя кривая имеет приоритет над перцентилем, пришедшим готовым из OpenDota:
+// иначе один и тот же матч считался бы по двум разным шкалам в зависимости от
+// того, успела ли OpenDota его разобрать, и место в рейтинге прыгало бы само
+// собой. Готовое значение остаётся только там, где своей кривой нет.
 func Apply(c Curves, m *dota.Match) {
 	if c == nil {
 		return
 	}
 	for _, p := range m.Players {
-		if len(p.Benchmarks) > 0 {
-			continue
-		}
 		raw := Raw(m, p)
 		out := make(map[string]float64, len(Metrics))
+		for k, v := range p.Benchmarks {
+			out[k] = v
+		}
 		for _, metric := range Metrics {
 			curve, err := c.Curve(p.HeroID, metric)
 			if err != nil || len(curve) < 2 {

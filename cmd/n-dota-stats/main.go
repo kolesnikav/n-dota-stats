@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/app"
 	"github.com/kolesnikav/n-dota-stats/internal/benchmarks"
+	"github.com/kolesnikav/n-dota-stats/internal/corpus"
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
@@ -33,6 +35,8 @@ func main() {
 		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
 		reparse  = flag.Int("reparse", 0, "попросить разобрать реплеи матчей за N дней и перечитать их")
 		gcTest   = flag.Int64("gc-test", 0, "проверить цепочку: ключ реплея, метаданные, разбор — и выйти")
+		harvest  = flag.Int("corpus", 0, "набрать корпус перцентилей: N запросов к Steam по 100 матчей, и выйти")
+		corpStat = flag.Bool("corpus-stats", false, "показать состояние своего корпуса перцентилей и выйти")
 	)
 	flag.Parse()
 
@@ -47,6 +51,14 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+
+	own, err := corpus.Load(db)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "корпус перцентилей:", err)
+		os.Exit(1)
+	}
+
+	seedCorpus(db, own, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 
 	od := odota.New(os.Getenv("OPENDOTA_API_KEY"))
 
@@ -162,8 +174,21 @@ func main() {
 		return
 	}
 
+	if *corpStat {
+		printCorpus(db, own)
+		return
+	}
+
+	if *harvest > 0 {
+		if err := runHarvest(db, own, *harvest); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if *dryRun {
-		if err := dry(db, source, od, *account, *match, *metaPath); err != nil {
+		if err := dry(db, own, source, od, *account, *match, *metaPath); err != nil {
 			fmt.Fprintln(os.Stderr, "ошибка:", err)
 			os.Exit(1)
 		}
@@ -176,6 +201,15 @@ func main() {
 		os.Exit(1)
 	}
 	a := app.New(db, telegram.New(token), source, od)
+	a.Corpus = own
+	if key := os.Getenv("STEAM_API_KEY"); key != "" {
+		if seed, err := db.NewestMatchID(); err == nil && seed > 0 {
+			a.Harvest = &corpus.Harvester{
+				Src: valve.New(key), DB: db, KV: db, Corpus: own,
+				SeedMatch: seed, Log: a.Log,
+			}
+		}
+	}
 
 	// Живая сессия Game Coordinator: только она отдаёт ключ реплея. Без неё
 	// бот работает, просто разбор матчей ограничен тем, что успела разобрать
@@ -292,11 +326,12 @@ func printMetrics() {
 	fmt.Printf("\nВсего показателей в реестре: %d\n", len(analysis.Registry))
 }
 
-func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchID int64, metaPath string) error {
+func dry(db *store.DB, own *corpus.Corpus, source app.MatchSource, od *odota.Client, account, matchID int64, metaPath string) error {
 	if account == 0 || matchID == 0 {
 		return fmt.Errorf("нужны --account и --match")
 	}
 	a := app.New(db, nil, source, od)
+	a.Corpus = own
 	// Тем же путём, что и бот: сохранённый скорборд, затем метаданные и
 	// реплей из базы. Иначе сухой прогон показывает не то, что видит
 	// пользователь, и проверять им нечего.
@@ -320,7 +355,7 @@ func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchI
 		fmt.Printf("метаданные применены к %d игрокам\n\n", md.Apply(m))
 		// Метаданные из файла меняют показатели, от которых зависят
 		// перцентили и раскладка ролей, — пересчитываем.
-		benchmarks.Apply(db, m)
+		benchmarks.Apply(corpus.Blend{Own: own, Fallback: db}, m)
 		analysis.DetectRoles(m, db.RoleHint)
 	}
 	rep, err := a.Build(m, account)
@@ -348,4 +383,103 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// runHarvest набирает корпус перцентилей обходом публичного потока матчей.
+func runHarvest(db *store.DB, own *corpus.Corpus, requests int) error {
+	key := os.Getenv("STEAM_API_KEY")
+	if key == "" {
+		return fmt.Errorf("нужен STEAM_API_KEY: поток публичных матчей отдаёт только Valve\n" +
+			"ключ бесплатный: https://steamcommunity.com/dev/apikey")
+	}
+	seed, err := db.NewestMatchID()
+	if err != nil || seed == 0 {
+		return fmt.Errorf("нет ни одного матча, чтобы взять точку отсчёта: сначала разбери хотя бы один")
+	}
+	h := &corpus.Harvester{
+		Src: valve.New(key), DB: db, KV: db, Corpus: own,
+		SeedMatch: seed,
+		Log:       func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	}
+	started := time.Now()
+	st, err := h.Run(context.Background(), requests)
+	fmt.Printf("запросов: %d · матчей просмотрено: %d · добавлено: %d · заняло %s\n",
+		st.Requests, st.Scanned, st.Added, time.Since(started).Round(time.Second))
+	if st.Head {
+		fmt.Println("дошли до конца потока — свежих матчей пока нет")
+	}
+	if err != nil {
+		return err
+	}
+	printCorpus(db, own)
+	return nil
+}
+
+// printCorpus показывает, насколько корпус готов заменить OpenDota.
+func printCorpus(db *store.DB, own *corpus.Corpus) {
+	matches, series := db.CorpusSize()
+	ready, total := own.Ready()
+	fmt.Printf("Свой корпус перцентилей\n")
+	fmt.Printf("  матчей учтено: %d\n", matches)
+	fmt.Printf("  пар «герой+метрика»: %d\n", series)
+	fmt.Printf("  героев со своей кривой: %d из %d (порог %d игр)\n", ready, total, corpus.MinGames)
+
+	type row struct {
+		id    int
+		games int64
+	}
+	var rows []row
+	for _, id := range dota.HeroIDs() {
+		if g := own.Games(id); g > 0 {
+			rows = append(rows, row{id, g})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].games < rows[j].games })
+	if len(rows) == 0 {
+		fmt.Println("  выборок пока нет — запусти --corpus N")
+		return
+	}
+	fmt.Println("  меньше всего игр:")
+	for i, r := range rows {
+		if i >= 5 {
+			break
+		}
+		fmt.Printf("    %-20s %d\n", dota.HeroName(r.id), r.games)
+	}
+}
+
+// seedCorpus досыпает в корпус матчи, которые уже лежат в базе. Своих матчей
+// мало для перцентилей по редким героям, но они бесплатны и приходят первыми —
+// пока публичный поток недоступен, это единственное наполнение.
+func seedCorpus(db *store.DB, own *corpus.Corpus, log func(string, ...any)) {
+	ids, err := db.MatchIDsNotInCorpus()
+	if err != nil || len(ids) == 0 {
+		return
+	}
+	var added int
+	for _, id := range ids {
+		raw, ok := db.LoadScoreboard(id)
+		if !ok {
+			continue
+		}
+		m, err := odota.Decode(raw)
+		if err != nil {
+			continue
+		}
+		if !own.AddMatch(m) {
+			// Матч в корпус не годится, но помечаем: второй раз не проверяем.
+			_ = db.CorpusAddMatch(id)
+			continue
+		}
+		if err := db.CorpusAddMatch(id); err == nil {
+			added++
+		}
+	}
+	if err := own.Flush(db); err != nil {
+		log("корпус: сохранение выборок: %v", err)
+		return
+	}
+	if added > 0 {
+		log("корпус: добавлено %d своих матчей", added)
+	}
 }
