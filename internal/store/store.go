@@ -130,6 +130,14 @@ CREATE TABLE IF NOT EXISTS role_medians (
     PRIMARY KEY (role, metric)
 );
 
+-- Сквозной номер матча: приходит вместе со списком матчей игрока, а нужен
+-- позже, когда за скорбордом идём в поток. Отдельной таблицей потому, что
+-- номер известен раньше, чем сам матч.
+CREATE TABLE IF NOT EXISTS match_seq (
+    match_id INTEGER PRIMARY KEY,
+    seq_num  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_match_users_chat ON match_users(chat_id);
 CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
 `
@@ -149,6 +157,7 @@ func Open(path string) (*DB, error) {
 	// Досыпаем колонки, появившиеся позже схемы. Ошибка «уже есть» — не ошибка.
 	for _, stmt := range []string{
 		`ALTER TABLE matches ADD COLUMN retry_after INTEGER DEFAULT 0`,
+		`ALTER TABLE matches ADD COLUMN seq_num INTEGER DEFAULT 0`,
 		// Свой корпус перцентилей был ошибкой: медианы и кривые берём у
 		// OpenDota. Таблицы сносим, чтобы не занимать место зря.
 		`DROP TABLE IF EXISTS corpus`,
@@ -961,4 +970,28 @@ func (d *DB) RoleMediansFetchedAt() int64 {
 	var t int64
 	_ = d.sql.QueryRow(`SELECT max(fetched_at) FROM role_medians`).Scan(&t)
 	return t
+}
+
+// SaveMatchSeq запоминает сквозной номер матча. Строки матча может ещё не
+// быть — номер приходит вместе со списком, до загрузки самого матча.
+func (d *DB) SaveMatchSeq(matchID, seq int64) {
+	if _, err := d.sql.Exec(`UPDATE matches SET seq_num=? WHERE match_id=?`, seq, matchID); err != nil {
+		return
+	}
+	_, _ = d.sql.Exec(
+		`INSERT OR IGNORE INTO match_seq(match_id, seq_num) VALUES(?,?)`, matchID, seq)
+}
+
+// MatchSeq возвращает сохранённый сквозной номер матча.
+func (d *DB) MatchSeq(matchID int64) (int64, bool) {
+	var seq int64
+	err := d.sql.QueryRow(`SELECT seq_num FROM match_seq WHERE match_id=?`, matchID).Scan(&seq)
+	if err == nil && seq > 0 {
+		return seq, true
+	}
+	err = d.sql.QueryRow(`SELECT seq_num FROM matches WHERE match_id=?`, matchID).Scan(&seq)
+	if err == nil && seq > 0 {
+		return seq, true
+	}
+	return 0, false
 }

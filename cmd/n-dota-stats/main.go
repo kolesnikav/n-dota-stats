@@ -59,7 +59,12 @@ func main() {
 	// бот остаётся рабочим, просто данные идут через посредника.
 	var source app.MatchSource = odota.NewSource(od)
 	if key := os.Getenv("STEAM_API_KEY"); key != "" {
-		source = valve.New(key)
+		v := valve.New(key)
+		v.SeqLookup, v.SeqRemember = db.MatchSeq, db.SaveMatchSeq
+		source = app.Fallback{
+			Primary: v, Backup: odota.NewSource(od),
+			Log: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		}
 	}
 
 	if *gcTest > 0 {

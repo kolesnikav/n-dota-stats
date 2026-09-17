@@ -8,11 +8,13 @@ package valve
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
@@ -21,13 +23,60 @@ import (
 const base = "https://api.steampowered.com/IDOTA2Match_570"
 
 // Client — клиент Steam Web API.
+//
+// Скорборд берётся не через GetMatchDetails: этот метод у Valve сломан и
+// отдаёт HTTP 500 с пустым телом на любом матче, хоть на свежем, хоть на
+// матче 2014 года (проверено 17.09.2026, ключ при этом рабочий — без ключа
+// приходит 403). Рабочий путь один: GetMatchHistoryBySequenceNum, он отдаёт
+// тот же полный скорборд, но по сквозному номеру матча.
 type Client struct {
 	Key  string
 	HTTP *http.Client
+
+	// SeqLookup и SeqRemember связывают id матча с его сквозным номером.
+	// Номер приходит вместе со списком матчей игрока; чтобы он пережил
+	// перезапуск, его хранит база.
+	SeqLookup   func(matchID int64) (int64, bool)
+	SeqRemember func(matchID, seq int64)
+
+	mu  sync.Mutex
+	seq map[int64]int64
 }
 
 func New(key string) *Client {
-	return &Client{Key: key, HTTP: &http.Client{Timeout: 45 * time.Second}}
+	return &Client{
+		Key:  key,
+		HTTP: &http.Client{Timeout: 45 * time.Second},
+		seq:  map[int64]int64{},
+	}
+}
+
+// ErrNoSeq — сквозной номер матча неизвестен, а без него скорборд не получить.
+var ErrNoSeq = errors.New("неизвестен сквозной номер матча")
+
+func (c *Client) rememberSeq(matchID, seq int64) {
+	if matchID == 0 || seq == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.seq[matchID] = seq
+	c.mu.Unlock()
+	if c.SeqRemember != nil {
+		c.SeqRemember(matchID, seq)
+	}
+}
+
+func (c *Client) lookupSeq(matchID int64) (int64, bool) {
+	c.mu.Lock()
+	seq, ok := c.seq[matchID]
+	c.mu.Unlock()
+	if ok {
+		return seq, true
+	}
+	if c.SeqLookup != nil {
+		return c.SeqLookup(matchID)
+	}
+	return 0, false
 }
 
 func (c *Client) get(path string, params url.Values, out any) ([]byte, error) {
@@ -62,7 +111,8 @@ func (c *Client) RecentMatchIDs(accountID int64) ([]int64, error) {
 			Status     int    `json:"status"`
 			StatusText string `json:"statusDetail"`
 			Matches    []struct {
-				MatchID int64 `json:"match_id"`
+				MatchID     int64 `json:"match_id"`
+				MatchSeqNum int64 `json:"match_seq_num"`
 			} `json:"matches"`
 		} `json:"result"`
 	}
@@ -78,6 +128,7 @@ func (c *Client) RecentMatchIDs(accountID int64) ([]int64, error) {
 	out := make([]int64, 0, len(doc.Result.Matches))
 	for _, m := range doc.Result.Matches {
 		out = append(out, m.MatchID)
+		c.rememberSeq(m.MatchID, m.MatchSeqNum)
 	}
 	return out, nil
 }
@@ -171,21 +222,32 @@ func convert(r *matchResult) *dota.Match {
 
 // Match загружает матч и приводит к доменной модели. Возвращает также сырой
 // ответ — он кладётся в базу как есть.
+//
+// Идём через поток по сквозному номеру: GetMatchDetails у Valve не работает.
 func (c *Client) Match(matchID int64) (*dota.Match, []byte, error) {
-	var doc matchDetails
+	seq, ok := c.lookupSeq(matchID)
+	if !ok {
+		return nil, nil, fmt.Errorf("матч %d: %w", matchID, ErrNoSeq)
+	}
+	var doc seqDoc
 	params := url.Values{}
-	params.Set("match_id", strconv.FormatInt(matchID, 10))
-	raw, err := c.get("/GetMatchDetails/v1/", params, &doc)
+	params.Set("start_at_match_seq_num", strconv.FormatInt(seq, 10))
+	params.Set("matches_requested", "1")
+	raw, err := c.get("/GetMatchHistoryBySequenceNum/v1/", params, &doc)
 	if err != nil {
 		return nil, nil, err
 	}
-	if doc.Result.Error != "" {
-		return nil, nil, fmt.Errorf("steam: %s", doc.Result.Error)
+	if doc.Result.Status != 1 || len(doc.Result.Matches) == 0 {
+		return nil, nil, fmt.Errorf("матч %d: пустой ответ (статус %d %s)",
+			matchID, doc.Result.Status, doc.Result.Error)
 	}
-	if doc.Result.MatchID == 0 || len(doc.Result.Players) == 0 {
-		return nil, nil, fmt.Errorf("пустой ответ по матчу %d", matchID)
+	r := &doc.Result.Matches[0]
+	if r.MatchID != matchID {
+		// Номер указывает на другой матч: значит связь id и номера испорчена,
+		// и молча отдавать чужой скорборд нельзя.
+		return nil, nil, fmt.Errorf("по номеру %d пришёл матч %d вместо %d", seq, r.MatchID, matchID)
 	}
-	return convert(&doc.Result), raw, nil
+	return convert(r), raw, nil
 }
 
 // seqDoc — ответ GetMatchHistoryBySequenceNum: те же матчи, что у
@@ -198,29 +260,6 @@ type seqDoc struct {
 		Error   string        `json:"statusDetail"`
 		Matches []matchResult `json:"matches"`
 	} `json:"result"`
-}
-
-// MatchSeqNum узнаёт номер матча в общей последовательности — с него начинается
-// обход. Без него неизвестно, где сейчас «голова» потока.
-func (c *Client) MatchSeqNum(matchID int64) (int64, error) {
-	var doc struct {
-		Result struct {
-			MatchSeqNum int64  `json:"match_seq_num"`
-			Error       string `json:"error"`
-		} `json:"result"`
-	}
-	params := url.Values{}
-	params.Set("match_id", strconv.FormatInt(matchID, 10))
-	if _, err := c.get("/GetMatchDetails/v1/", params, &doc); err != nil {
-		return 0, err
-	}
-	if doc.Result.Error != "" {
-		return 0, fmt.Errorf("steam: %s", doc.Result.Error)
-	}
-	if doc.Result.MatchSeqNum == 0 {
-		return 0, fmt.Errorf("матч %d: номер последовательности не отдан", matchID)
-	}
-	return doc.Result.MatchSeqNum, nil
 }
 
 // MatchesBySeq возвращает до count матчей начиная с номера start и номер,
