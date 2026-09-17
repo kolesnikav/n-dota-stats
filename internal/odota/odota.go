@@ -255,6 +255,7 @@ type rawMatch struct {
 	LobbyType  int        `json:"lobby_type"`
 	GameMode   int        `json:"game_mode"`
 	Cluster    int        `json:"cluster"`
+	ReplaySalt uint32     `json:"replay_salt"`
 	Version    *int       `json:"version"`
 	Players    []rawPlyer `json:"players"`
 }
@@ -332,6 +333,7 @@ func Decode(raw []byte) (*dota.Match, error) {
 		LobbyType:  rm.LobbyType,
 		GameMode:   rm.GameMode,
 		Cluster:    rm.Cluster,
+		ReplaySalt: rm.ReplaySalt,
 		Detail:     dota.DetailScoreboard,
 	}
 	if rm.Version != nil {

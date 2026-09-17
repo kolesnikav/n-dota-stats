@@ -30,9 +30,48 @@ func (a *App) metaTick() {
 	}
 }
 
-func (a *App) processMeta(matchID int64) {
+// errBudget — суточный лимит обращений к Game Coordinator исчерпан.
+var errBudget = errors.New("бюджет Game Coordinator исчерпан")
+
+// replaySalt достаёт ключ реплея, обращаясь к Game Coordinator только если
+// ключа ещё нет в базе.
+//
+// Ключ постоянный, а запросы к GC — единственный дефицит во всей цепочке:
+// около сотни на аккаунт в сутки. Поэтому сначала база, и только потом GC —
+// и бюджет списывается до запроса, а не после: иначе лимит защищал бы от
+// скачивания реплея, а не от того, ради чего он заведён.
+func (a *App) replaySalt(matchID int64) (gc.Salt, error) {
+	if cluster, salt, ok := a.DB.ReplaySalt(matchID); ok {
+		return gc.Salt{Cluster: cluster, Salt: salt}, nil
+	}
+	// Второй бесплатный источник: в ответе OpenDota ключ приходит вместе с
+	// матчем. Раз он уже скачан и лежит в базе, обращаться к GC незачем.
+	if m, err := a.LoadMatch(matchID, 0); err == nil && m.ReplaySalt > 0 {
+		if err := a.DB.SaveReplaySalt(matchID, m.Cluster, m.ReplaySalt); err != nil {
+			a.Log("сохранение ключа реплея %d: %v", matchID, err)
+		}
+		return gc.Salt{Cluster: m.Cluster, Salt: m.ReplaySalt}, nil
+	}
+	if !a.DB.TakeGCBudget(gcDailyLimit) {
+		return gc.Salt{}, errBudget
+	}
 	salt, err := a.Salt.ReplaySalt(matchID)
 	if err != nil {
+		return gc.Salt{}, err
+	}
+	if err := a.DB.SaveReplaySalt(matchID, salt.Cluster, salt.Salt); err != nil {
+		a.Log("сохранение ключа реплея %d: %v", matchID, err)
+	}
+	return salt, nil
+}
+
+func (a *App) processMeta(matchID int64) {
+	salt, err := a.replaySalt(matchID)
+	if err != nil {
+		if errors.Is(err, errBudget) {
+			a.Log("суточный бюджет Game Coordinator исчерпан, матч %d подождёт", matchID)
+			return
+		}
 		if errors.Is(err, gc.ErrNotConfigured) {
 			// без доступа к GC матч так и останется на уровне скорборда
 			_ = a.DB.SetReplayState(matchID, store.ReplayFailed, "нет ключа реплея")
@@ -40,10 +79,6 @@ func (a *App) processMeta(matchID int64) {
 		}
 		a.Log("ключ реплея %d: %v", matchID, err)
 		_ = a.DB.SetReplayState(matchID, store.ReplayFailed, err.Error())
-		return
-	}
-	if !a.DB.TakeGCBudget(gcDailyLimit) {
-		a.Log("суточный бюджет Game Coordinator исчерпан, матч %d подождёт", matchID)
 		return
 	}
 	_ = a.DB.SetReplayState(matchID, store.ReplayFetching, "")

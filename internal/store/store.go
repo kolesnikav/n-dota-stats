@@ -321,11 +321,15 @@ func (d *DB) SaveMatch(m *dota.Match, raw []byte) error {
 		win = 1
 	}
 	_, err := d.sql.Exec(`
-		INSERT INTO matches(match_id,start_time,duration,radiant_win,lobby_type,cluster,detail,scoreboard)
-		VALUES(?,?,?,?,?,?,?,?)
+		INSERT INTO matches(match_id,start_time,duration,radiant_win,lobby_type,cluster,detail,scoreboard,replay_salt)
+		VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(match_id) DO UPDATE SET
-			duration=excluded.duration, detail=excluded.detail, scoreboard=excluded.scoreboard`,
-		m.ID, m.StartTime, m.Duration, win, m.LobbyType, m.Cluster, int(m.Detail), string(raw))
+			duration=excluded.duration, detail=excluded.detail, scoreboard=excluded.scoreboard,
+			-- Ключ реплея не затираем нулём: источник мог его не прислать,
+			-- а повторно выпросить его у Game Coordinator стоит дорого.
+			replay_salt=CASE WHEN excluded.replay_salt>0 THEN excluded.replay_salt ELSE matches.replay_salt END,
+			cluster=CASE WHEN excluded.cluster>0 THEN excluded.cluster ELSE matches.cluster END`,
+		m.ID, m.StartTime, m.Duration, win, m.LobbyType, m.Cluster, int(m.Detail), string(raw), int64(m.ReplaySalt))
 	if err != nil {
 		return err
 	}
@@ -994,4 +998,31 @@ func (d *DB) MatchSeq(matchID int64) (int64, bool) {
 		return seq, true
 	}
 	return 0, false
+}
+
+// SaveReplaySalt запоминает ключ реплея и кластер.
+//
+// Ключ у матча постоянный, и просить его у Game Coordinator во второй раз
+// незачем: это единственный дефицитный ресурс во всей цепочке — около сотни
+// запросов на аккаунт в сутки.
+func (d *DB) SaveReplaySalt(matchID int64, cluster int, salt uint32) error {
+	_, err := d.sql.Exec(
+		`UPDATE matches SET replay_salt=?, cluster=? WHERE match_id=?`,
+		int64(salt), cluster, matchID)
+	return err
+}
+
+// ReplaySalt возвращает сохранённый ключ реплея.
+func (d *DB) ReplaySalt(matchID int64) (cluster int, salt uint32, ok bool) {
+	var c sql.NullInt64
+	var s sql.NullInt64
+	if err := d.sql.QueryRow(
+		`SELECT cluster, replay_salt FROM matches WHERE match_id=?`, matchID,
+	).Scan(&c, &s); err != nil {
+		return 0, 0, false
+	}
+	if !s.Valid || s.Int64 == 0 {
+		return 0, 0, false
+	}
+	return int(c.Int64), uint32(s.Int64), true
 }
