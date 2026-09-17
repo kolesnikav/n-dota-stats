@@ -301,3 +301,38 @@ func TestPredictedFrozenAfterMarking(t *testing.T) {
 		t.Errorf("разметка потеряна: %v", got)
 	}
 }
+
+// Матч, скачанный ради одного игрока, должен связываться и со вторым, когда
+// тот появится: иначе он недосчитается игр, которые у нас уже есть.
+func TestSecondPlayerLinksToKnownMatch(t *testing.T) {
+	db := open(t)
+	const match = int64(700)
+	m := &dota.Match{ID: match, StartTime: 5, Duration: 2000}
+	if err := db.SaveMatch(m, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	link := func(acc int64) {
+		t.Helper()
+		if err := db.LinkMatchUser(store.MatchUser{
+			MatchID: match, AccountID: acc, ChatID: acc, Role: dota.RoleMid,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	link(1)
+	if db.HasMatchUser(match, 2) {
+		t.Fatal("второй игрок связан, хотя его ещё не добавляли")
+	}
+	// Матч уже известен — это и есть случай, на котором связь терялась.
+	if _, known := db.KnownMatch(match); !known {
+		t.Fatal("матч должен быть известен")
+	}
+	link(2)
+	if !db.HasMatchUser(match, 2) {
+		t.Error("второй игрок так и не связан с уже известным матчем")
+	}
+	if n := db.MatchCount(2); n != 1 {
+		t.Errorf("у второго игрока %d матчей, ждали 1", n)
+	}
+}

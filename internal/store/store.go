@@ -1109,3 +1109,21 @@ func (d *DB) AllMatchUsers() ([]MatchUser, error) {
 	}
 	return out, rows.Err()
 }
+
+// AllMatchIDs — все матчи в базе, от старых к свежим.
+func (d *DB) AllMatchIDs() ([]int64, error) {
+	rows, err := d.sql.Query(`SELECT match_id FROM matches ORDER BY start_time`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

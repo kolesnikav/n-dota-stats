@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"strconv"
@@ -13,6 +14,10 @@ import (
 	"github.com/kolesnikav/n-dota-stats/internal/store"
 	"github.com/kolesnikav/n-dota-stats/internal/telegram"
 )
+
+// errNotInMatch — игрока нет в составе. Обычное дело при обходе чужих матчей,
+// не ошибка.
+var errNotInMatch = errors.New("игрока нет в этом матче")
 
 func clock(sec int) string { return fmt.Sprintf("%d:%02d", sec/60, sec%60) }
 
@@ -62,7 +67,7 @@ type Report struct {
 func (a *App) Build(m *dota.Match, accountID int64) (*Report, error) {
 	p := m.Find(accountID)
 	if p == nil {
-		return nil, fmt.Errorf("игрока нет в этом матче")
+		return nil, errNotInMatch
 	}
 	weights := mvp.EqualWeights()
 	if w, ok := a.DB.Weights(accountID); ok && len(w) == mvp.Dim() {

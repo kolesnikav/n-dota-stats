@@ -35,6 +35,7 @@ func main() {
 		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
 		reparse  = flag.Int("reparse", 0, "попросить разобрать реплеи матчей за N дней и перечитать их")
 		gcTest   = flag.Int64("gc-test", 0, "проверить цепочку: ключ реплея, метаданные, разбор — и выйти")
+		relink   = flag.Bool("relink", false, "связать пользователей со всеми их матчами в базе и выйти")
 		resnap   = flag.Bool("snapshots", false, "пересчитать сводки всех матчей и выйти")
 		medians  = flag.Bool("medians", false, "пересчитать медианы ролей по OpenDota и выйти")
 		verify   = flag.Int64("verify", 0, "сверить свой разбор матча с данными OpenDota и выйти")
@@ -170,6 +171,14 @@ func main() {
 		fmt.Println()
 		fmt.Println(strip(res.Text()))
 		fmt.Printf("заняло: %s\n", res.Elapsed.Round(time.Second))
+		return
+	}
+
+	if *relink {
+		if err := relinkUsers(db, source, od); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -519,6 +528,39 @@ func rebuildSnapshots(db *store.DB, source app.MatchSource, od *odota.Client) er
 		fmt.Printf("осталось без сводки: %d\n", without)
 	} else {
 		fmt.Println("сводка есть у каждого матча")
+	}
+	return nil
+}
+
+// relinkUsers связывает каждого пользователя со всеми матчами в базе, где он
+// играл. Матч мог быть скачан ради товарища по команде или до того, как
+// человек зарегистрировался, — и тогда связи не появлялось.
+func relinkUsers(db *store.DB, source app.MatchSource, od *odota.Client) error {
+	users, err := db.Users()
+	if err != nil {
+		return err
+	}
+	ids, err := db.AllMatchIDs()
+	if err != nil {
+		return err
+	}
+	a := app.New(db, nil, source, od)
+	fmt.Printf("матчей в базе: %d · пользователей: %d\n", len(ids), len(users))
+	for _, u := range users {
+		if u.AccountID == 0 {
+			continue
+		}
+		var added int
+		for _, id := range ids {
+			if db.HasMatchUser(id, u.AccountID) {
+				continue
+			}
+			if _, err := a.Report(u.ChatID, u.AccountID, id); err == nil {
+				added++
+			}
+		}
+		fmt.Printf("  %-16s аккаунт %-12d добавлено связей: %d · всего матчей: %d\n",
+			u.Nickname, u.AccountID, added, db.MatchCount(u.AccountID))
 	}
 	return nil
 }

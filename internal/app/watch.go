@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"time"
 
 	"github.com/kolesnikav/n-dota-stats/internal/store"
@@ -81,6 +82,18 @@ func (a *App) pollUser(u store.User) {
 
 	for _, id := range ids {
 		if _, known := a.DB.KnownMatch(id); known {
+			// Матч уже скачан — ради товарища по команде или ещё до того, как
+			// этот игрок зарегистрировался. Пропускать его целиком нельзя:
+			// без связи матч не попадёт ни в историю, ни в средние, и человек
+			// недосчитается игр, которые у нас есть.
+			//
+			// Сводку при этом не шлём: на первом опросе это два десятка
+			// сообщений подряд про игры, о которых никто не спрашивал.
+			if !a.DB.HasMatchUser(id, u.AccountID) {
+				if _, err := a.Report(u.ChatID, u.AccountID, id); err != nil && !errors.Is(err, errNotInMatch) {
+					a.Log("связь матча %d с %d: %v", id, u.AccountID, err)
+				}
+			}
 			continue
 		}
 		m, raw, err := a.Source.Match(id)
