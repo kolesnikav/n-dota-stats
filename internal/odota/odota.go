@@ -379,6 +379,7 @@ func Decode(raw []byte) (*dota.Match, error) {
 		setInt(&p.ObsKilled, rp.ObserverKills)
 		setInt(&p.SenKilled, rp.SentryKills)
 		setInt(&p.CampsStacked, rp.CampsStacked)
+		p.HasStacks = rp.CampsStacked != nil
 		setInt(&p.NeutralKills, rp.NeutralKills)
 		setInt(&p.Buybacks, rp.BuybackCount)
 		setInt(&p.RunePickups, rp.RunePickups)

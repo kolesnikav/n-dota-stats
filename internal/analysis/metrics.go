@@ -326,6 +326,9 @@ var Registry = []Metric{
 		Key: "stacks", Group: "Карта", Label: "Стаки", Roles: []dota.Role{dota.RoleOfflane, dota.RoleRoamer, dota.RoleHard}, Short: true,
 		Needs: dota.DetailMeta, Compare: []CompareKind{CompareRoleMedian, CompareOwnHistory},
 		Calc: func(c *Ctx) (Value, bool) {
+			if !c.Player.HasStacks {
+				return none()
+			}
 			return num(float64(c.Player.CampsStacked), "%d", c.Player.CampsStacked)
 		},
 	},

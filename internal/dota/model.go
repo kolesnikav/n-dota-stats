@@ -145,14 +145,17 @@ type Player struct {
 	RankTier               int
 
 	// Требуют метаданных или разбора реплея.
-	Lane                   int
-	LaneRole               int
-	IsRoaming              bool
-	ObsPlaced              int
-	SenPlaced              int
-	ObsKilled              int
-	SenKilled              int
-	CampsStacked           int
+	Lane         int
+	LaneRole     int
+	IsRoaming    bool
+	ObsPlaced    int
+	SenPlaced    int
+	ObsKilled    int
+	SenKilled    int
+	CampsStacked int
+	// HasStacks различает «стаков не было» и «стаки никто не считал»:
+	// их отдаёт только разбор OpenDota, свой парсер их не видит.
+	HasStacks              bool
 	NeutralKills           int
 	Buybacks               int
 	RunePickups            int

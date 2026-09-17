@@ -296,11 +296,14 @@ func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchI
 	if account == 0 || matchID == 0 {
 		return fmt.Errorf("нужны --account и --match")
 	}
-	m, raw, err := source.Match(matchID)
+	a := app.New(db, nil, source, od)
+	// Тем же путём, что и бот: сохранённый скорборд, затем метаданные и
+	// реплей из базы. Иначе сухой прогон показывает не то, что видит
+	// пользователь, и проверять им нечего.
+	m, err := a.LoadMatch(matchID, account)
 	if err != nil {
 		return err
 	}
-	_ = db.SaveMatch(m, raw)
 	if metaPath != "" {
 		blob, err := os.ReadFile(metaPath)
 		if err != nil {
@@ -315,11 +318,11 @@ func dry(db *store.DB, source app.MatchSource, od *odota.Client, account, matchI
 			return fmt.Errorf("разбор метаданных: %w", err)
 		}
 		fmt.Printf("метаданные применены к %d игрокам\n\n", md.Apply(m))
+		// Метаданные из файла меняют показатели, от которых зависят
+		// перцентили и раскладка ролей, — пересчитываем.
+		benchmarks.Apply(db, m)
+		analysis.DetectRoles(m, db.RoleHint)
 	}
-	benchmarks.Apply(db, m)
-	analysis.DetectRoles(m, db.RoleHint)
-
-	a := app.New(db, nil, source, od)
 	rep, err := a.Build(m, account)
 	if err != nil {
 		return err

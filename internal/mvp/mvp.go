@@ -67,20 +67,26 @@ func Vector(p *dota.Player) []float64 {
 	return vec
 }
 
-// Score — взвешенное среднее признаков, 0..1 при неотрицательных весах.
+// Score — взвешенная оценка признаков, всегда в диапазоне 0..1.
 func Score(weights, vec []float64) float64 {
 	if len(weights) != len(vec) {
 		return 0
 	}
-	var sum, total float64
+	// Нормируем по сумме модулей весов, а отрицательные веса смещают начало
+	// отсчёта. Иначе после /fit, где вес смертей уходит в минус, знаменатель
+	// уменьшается, а числитель — нет, и балл вылезает за сотню.
+	var sum, scale, floor float64
 	for i := range vec {
 		sum += weights[i] * vec[i]
-		total += weights[i]
+		scale += math.Abs(weights[i])
+		if weights[i] < 0 {
+			floor += weights[i]
+		}
 	}
-	if total == 0 {
+	if scale == 0 {
 		return 0
 	}
-	return sum / total
+	return (sum - floor) / scale
 }
 
 // Scored — игрок с посчитанной оценкой.
