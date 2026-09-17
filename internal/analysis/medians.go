@@ -1,6 +1,10 @@
 package analysis
 
-import "github.com/kolesnikav/n-dota-stats/internal/dota"
+import (
+	"sync"
+
+	"github.com/kolesnikav/n-dota-stats/internal/dota"
+)
 
 // Медианы по ролям. Посчитаны запросами к /api/explorer OpenDota по последним
 // 6000 разобранным матчам на каждую группу, сентябрь 2026. SQL и разбивка —
@@ -34,8 +38,33 @@ var roleMedians = map[dota.Role]map[string]float64{
 	},
 }
 
+// live — медианы, снятые у OpenDota на прошлой неделе. Пока их нет, работает
+// таблица выше: она снята тем же запросом, просто раньше.
+var (
+	liveMu      sync.RWMutex
+	liveMedians map[dota.Role]map[string]float64
+)
+
+// SetRoleMedians подменяет таблицу свежими значениями.
+func SetRoleMedians(m map[dota.Role]map[string]float64) {
+	if len(m) == 0 {
+		return
+	}
+	liveMu.Lock()
+	liveMedians = m
+	liveMu.Unlock()
+}
+
 // RoleMedian возвращает медиану показателя для роли.
 func RoleMedian(role dota.Role, key string) (float64, bool) {
+	liveMu.RLock()
+	live := liveMedians
+	liveMu.RUnlock()
+	if m, ok := live[role]; ok {
+		if v, ok := m[key]; ok {
+			return v, true
+		}
+	}
 	m, ok := roleMedians[role]
 	if !ok {
 		return 0, false

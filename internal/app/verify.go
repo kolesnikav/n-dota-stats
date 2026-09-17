@@ -69,6 +69,12 @@ var VerifyFields = []Field{
 		Theirs: func(p *dota.Player) float64 { return float64(p.SenPlaced) }},
 	{Key: "teamfight", Label: "участие в файтах", Tolerance: 0.05, Ours: func(t *replay.Totals, _ float64) float64 { return t.TeamfightParticipation },
 		Theirs: func(p *dota.Player) float64 { return p.TeamfightParticipation }},
+	{Key: "neutrals", Label: "нейтралы",
+		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.NeutralKills) },
+		Theirs:   func(p *dota.Player) float64 { return float64(p.NeutralKills) }},
+	{Key: "buybacks", Label: "выкупы",
+		OursFull: func(ps *replay.PlayerStats, _ float64) float64 { return float64(ps.BuybackCount) },
+		Theirs:   func(p *dota.Player) float64 { return float64(p.Buybacks) }},
 	{Key: "gpm", Label: "золото в минуту", Tolerance: 0.02,
 		Ours:   func(t *replay.Totals, mins float64) float64 { return float64(t.Gold) / mins },
 		Theirs: func(p *dota.Player) float64 { return float64(p.GPM) }},
@@ -180,6 +186,26 @@ func allTheirsZero(ref *dota.Match, res *replay.Result, f Field) bool {
 		}
 	}
 	return theirsSum == 0 && oursSum != 0
+}
+
+// VerifyLanes сверяет определение линии: это не величина, а раскладка, и
+// смотреть на неё нужно вместе со стороной игрока.
+func VerifyLanes(ref *dota.Match, res *replay.Result) (agree int, total int, wrong []string) {
+	for _, p := range ref.Players {
+		ps, ok := res.Players[p.Slot]
+		if !ok || p.Lane == 0 {
+			continue
+		}
+		lane, role := ps.Lane(p.IsRadiant)
+		total++
+		if lane == p.Lane && role == p.LaneRole {
+			agree++
+			continue
+		}
+		wrong = append(wrong, fmt.Sprintf("%-18s у нас линия %d роль %d · у них линия %d роль %d",
+			p.Name(), lane, role, p.Lane, p.LaneRole))
+	}
+	return agree, total, wrong
 }
 
 // Text печатает отчёт.

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kolesnikav/n-dota-stats/internal/corpus"
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 
 	_ "modernc.org/sqlite"
@@ -123,17 +122,13 @@ CREATE TABLE IF NOT EXISTS match_meta (match_id INTEGER PRIMARY KEY, data TEXT);
 
 CREATE TABLE IF NOT EXISTS match_replay (match_id INTEGER PRIMARY KEY, data TEXT);
 
-CREATE TABLE IF NOT EXISTS corpus (
-    hero_id INTEGER NOT NULL,
-    metric  TEXT NOT NULL,
-    seen    INTEGER NOT NULL,
-    vals    BLOB NOT NULL,
-    PRIMARY KEY (hero_id, metric)
+CREATE TABLE IF NOT EXISTS role_medians (
+    role       INTEGER NOT NULL,
+    metric     TEXT NOT NULL,
+    value      REAL NOT NULL,
+    fetched_at INTEGER,
+    PRIMARY KEY (role, metric)
 );
-
--- Какие матчи уже учтены: один матч не должен попасть в выборку дважды,
--- иначе его игроки получат двойной вес.
-CREATE TABLE IF NOT EXISTS corpus_matches (match_id INTEGER PRIMARY KEY);
 
 CREATE INDEX IF NOT EXISTS idx_match_users_chat ON match_users(chat_id);
 CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
@@ -154,6 +149,10 @@ func Open(path string) (*DB, error) {
 	// Досыпаем колонки, появившиеся позже схемы. Ошибка «уже есть» — не ошибка.
 	for _, stmt := range []string{
 		`ALTER TABLE matches ADD COLUMN retry_after INTEGER DEFAULT 0`,
+		// Свой корпус перцентилей был ошибкой: медианы и кривые берём у
+		// OpenDota. Таблицы сносим, чтобы не занимать место зря.
+		`DROP TABLE IF EXISTS corpus`,
+		`DROP TABLE IF EXISTS corpus_matches`,
 	} {
 		_, _ = db.Exec(stmt)
 	}
@@ -898,64 +897,6 @@ func (d *DB) GCBudgetUsed() int {
 	return used
 }
 
-// ------------------------------------------------------------------- корпус
-
-// LoadCorpus поднимает все выборки: значения и счётчики всего виденного.
-func (d *DB) LoadCorpus() (map[int]map[string][]float32, map[int]map[string]int64, error) {
-	rows, err := d.sql.Query(`SELECT hero_id,metric,seen,vals FROM corpus`)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
-	values := map[int]map[string][]float32{}
-	seen := map[int]map[string]int64{}
-	for rows.Next() {
-		var hero int
-		var metric string
-		var n int64
-		var blob []byte
-		if err := rows.Scan(&hero, &metric, &n, &blob); err != nil {
-			return nil, nil, err
-		}
-		if values[hero] == nil {
-			values[hero] = map[string][]float32{}
-			seen[hero] = map[string]int64{}
-		}
-		values[hero][metric] = corpus.DecodeValues(blob)
-		seen[hero][metric] = n
-	}
-	return values, seen, rows.Err()
-}
-
-// SaveCorpusRing сохраняет одну выборку целиком.
-func (d *DB) SaveCorpusRing(heroID int, metric string, seen int64, values []float32) error {
-	_, err := d.sql.Exec(`
-		INSERT INTO corpus(hero_id,metric,seen,vals) VALUES(?,?,?,?)
-		ON CONFLICT(hero_id,metric) DO UPDATE SET seen=excluded.seen, vals=excluded.vals`,
-		heroID, metric, seen, corpus.EncodeValues(values))
-	return err
-}
-
-// CorpusHasMatch — учтён ли матч в выборках.
-func (d *DB) CorpusHasMatch(matchID int64) bool {
-	var one int
-	err := d.sql.QueryRow(`SELECT 1 FROM corpus_matches WHERE match_id=?`, matchID).Scan(&one)
-	return err == nil
-}
-
-// CorpusAddMatch помечает матч учтённым.
-func (d *DB) CorpusAddMatch(matchID int64) error {
-	_, err := d.sql.Exec(`INSERT OR IGNORE INTO corpus_matches(match_id) VALUES(?)`, matchID)
-	return err
-}
-
-// CorpusSize — сколько матчей учтено и сколько пар «герой+метрика» заполнено.
-func (d *DB) CorpusSize() (matches, series int) {
-	_ = d.sql.QueryRow(`SELECT count(*) FROM corpus_matches`).Scan(&matches)
-	_ = d.sql.QueryRow(`SELECT count(*) FROM corpus`).Scan(&series)
-	return matches, series
-}
-
 // NewestMatchID — самый свежий известный матч. Нужен как точка отсчёта для
 // обхода публичного потока: номер в последовательности берётся от него.
 func (d *DB) NewestMatchID() (int64, error) {
@@ -967,25 +908,57 @@ func (d *DB) NewestMatchID() (int64, error) {
 	return id, err
 }
 
-// MatchIDsNotInCorpus — матчи, ещё не учтённые в выборках перцентилей.
-// Свои матчи уже скачаны, и не использовать их было бы расточительством.
-func (d *DB) MatchIDsNotInCorpus() ([]int64, error) {
-	rows, err := d.sql.Query(`
-		SELECT m.match_id FROM matches m
-		LEFT JOIN corpus_matches c ON c.match_id = m.match_id
-		WHERE c.match_id IS NULL AND m.scoreboard IS NOT NULL
-		ORDER BY m.start_time`)
+// --------------------------------------------------------------- медианы ролей
+
+// SaveRoleMedians сохраняет снимок медиан целиком, заменяя прошлый.
+func (d *DB) SaveRoleMedians(m map[dota.Role]map[string]float64) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM role_medians`); err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	for role, vals := range m {
+		for metric, v := range vals {
+			if _, err := tx.Exec(
+				`INSERT INTO role_medians(role,metric,value,fetched_at) VALUES(?,?,?,?)`,
+				int(role), metric, v, now); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// RoleMedians читает сохранённый снимок.
+func (d *DB) RoleMedians() (map[dota.Role]map[string]float64, error) {
+	rows, err := d.sql.Query(`SELECT role,metric,value FROM role_medians`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []int64
+	out := map[dota.Role]map[string]float64{}
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var role int
+		var metric string
+		var v float64
+		if err := rows.Scan(&role, &metric, &v); err != nil {
 			return nil, err
 		}
-		out = append(out, id)
+		if out[dota.Role(role)] == nil {
+			out[dota.Role(role)] = map[string]float64{}
+		}
+		out[dota.Role(role)][metric] = v
 	}
 	return out, rows.Err()
+}
+
+// RoleMediansFetchedAt — когда снимок снят.
+func (d *DB) RoleMediansFetchedAt() int64 {
+	var t int64
+	_ = d.sql.QueryRow(`SELECT max(fetched_at) FROM role_medians`).Scan(&t)
+	return t
 }

@@ -74,6 +74,14 @@ type PlayerStats struct {
 	Wards     []Ward
 	Deaths    []Death
 
+	// NeutralKills — убито нейтральных крипов, BuybackCount — выкупов.
+	// Считаются по боевому логу: в сущностях их нет.
+	NeutralKills int
+	BuybackCount int
+	// laneVotes — сколько раз игрок был замечен на каждой линии во время
+	// лейнинга. Индексы: 1 нижняя, 2 центр, 3 верхняя.
+	laneVotes [4]int
+
 	// HealAllies — вылечено союзным героям, без самолечения. Считается по
 	// боевому логу. Со счётом Valve это намеренно разные величины: их
 	// hero_healing воспроизвести не удалось (см. docs/replay.md), а для оценки
@@ -235,13 +243,33 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			if rep, ok := e.GetUint64("m_hReplicatingOtherHeroModel"); ok && rep != 16777215 {
 				return nil
 			}
-			slot, ok := slotsByKey[heroKey(strings.TrimPrefix(cn, "CDOTA_Unit_Hero_"))]
+			slot, ok := slotFromPlayerID(e)
+			if !ok {
+				// Запасной путь — по имени. Он ненадёжен: у части героев
+				// внутреннее имя другое (Io зовётся Wisp, Treant Protector —
+				// Treant), и до перехода на номер игрока они молча выпадали.
+				slot, ok = slotsByKey[heroKey(strings.TrimPrefix(cn, "CDOTA_Unit_Hero_"))]
+			}
 			if !ok {
 				return nil
 			}
 			heroByIndex[e.GetIndex()] = slot
+			// Боевой лог называет героев по-своему. Раз уж слот известен,
+			// запоминаем и это имя — тогда таблица имён строится из самого
+			// реплея, а не из догадок о том, как Valve зовёт героя.
+			if npc := npcName(cn); npc != "" {
+				slots[npc] = slot
+			}
 			if x, y := cellPos(e); x > 0 {
 				heroPos[slot] = [2]float64{x, y}
+				// Линию определяем голосованием по позициям во время
+				// лейнинга. Первые полминуты пропускаем: все ещё стоят на
+				// фонтане, а фонтаны лежат на той же диагонали, что центр.
+				if t := gameTime(); t >= 30 && t <= laneWindow {
+					if lane := laneAt(x, y); lane > 0 {
+						res.player(slot).laneVotes[lane]++
+					}
+				}
 			}
 
 		case strings.Contains(cn, "NPC_Observer_Ward"):
@@ -372,6 +400,19 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			}
 			return nil
 		}
+		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_BUYBACK {
+			// В записи о выкупе игрок лежит в поле value — это его номер,
+			// от нуля до девяти, а не слот.
+			id := int(entry.GetValue())
+			if id >= 0 && id < 10 {
+				slot := id
+				if id >= 5 {
+					slot = 128 + id - 5
+				}
+				res.player(slot).BuybackCount++
+			}
+			return nil
+		}
 		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_HEAL {
 			// Лечение считаем по боевому логу: поле m_fHealing в сущности —
 			// другой счётчик, он завышает у Мипо и обнуляется у Джаггернаута.
@@ -392,6 +433,12 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		}
 		target, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetTargetName()))
 		attacker, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
+		if strings.HasPrefix(target, "npc_dota_neutral_") {
+			if slot, ok := slots[attacker]; ok {
+				res.player(slot).NeutralKills++
+			}
+			return nil
+		}
 		switch target {
 		case "npc_dota_observer_wards", "npc_dota_sentry_wards":
 			slot, ok := slots[attacker]
@@ -597,6 +644,11 @@ func (r *Result) Apply(m *dota.Match) int {
 			p.Stuns = t.Stuns
 			p.CampsStacked, p.HasStacks = t.CampsStacked, true
 			p.RunePickups = t.RunePickups
+			p.NeutralKills = ps.NeutralKills
+			p.Buybacks = ps.BuybackCount
+			if lane, role := ps.Lane(p.IsRadiant); lane > 0 {
+				p.Lane, p.LaneRole = lane, role
+			}
 			p.TeamfightParticipation = t.TeamfightParticipation
 			// Счётчики вардов из сущности точнее нашего слежения: оно нужно
 			// ради координат и времени жизни, а не ради количества.
@@ -666,4 +718,99 @@ func floatProp(e *manta.Entity, name string) float32 {
 		return v
 	}
 	return 0
+}
+
+// laneWindow — до какой секунды считаем позиции лейнингом. Десять минут — тот
+// же рубеж, по которому считаются добивания и эффективность линии.
+const laneWindow = 600
+
+// laneMid — полуширина центральной полосы в долях карты. Подобрана сверкой с
+// OpenDota: у́же — центровые начинают попадать в боковые линии, шире — боковые
+// затягивает в центр.
+const laneMid = 0.14
+
+// laneAt относит точку карты к линии: 1 нижняя, 2 центр, 3 верхняя, 0 — не
+// определено.
+//
+// Координаты в реплее лежат примерно в диапазоне 64…192, начало отсчёта в углу
+// Radiant. Центральная линия идёт по главной диагонали, нижняя проходит ниже
+// неё, верхняя выше, поэтому достаточно знать, по какую сторону диагонали
+// точка и насколько далеко.
+func laneAt(x, y float64) int {
+	const lo, span = 64.0, 128.0
+	nx, ny := (x-lo)/span, (y-lo)/span
+	if nx < 0 || nx > 1 || ny < 0 || ny > 1 {
+		return 0
+	}
+	switch d := nx - ny; {
+	case d > laneMid:
+		return 1
+	case d < -laneMid:
+		return 3
+	default:
+		return 2
+	}
+}
+
+// Lane возвращает линию игрока по голосованию позиций и её же в виде роли
+// линии: 1 лёгкая, 2 центр, 3 сложная. Роль зависит от стороны — нижняя линия
+// лёгкая для Radiant и сложная для Dire.
+func (p *PlayerStats) Lane(radiant bool) (lane, role int) {
+	best, votes := 0, 0
+	for l := 1; l <= 3; l++ {
+		if p.laneVotes[l] > votes {
+			best, votes = l, p.laneVotes[l]
+		}
+	}
+	if best == 0 {
+		return 0, 0
+	}
+	role = best
+	if !radiant {
+		switch best {
+		case 1:
+			role = 3
+		case 3:
+			role = 1
+		}
+	}
+	return best, role
+}
+
+// slotFromPlayerID достаёт слот игрока прямо из сущности героя.
+//
+// m_iPlayerID хранится удвоенным: у первого игрока 0, у второго 2 и так далее
+// до 18. Это надёжнее имени: имя героя внутри игры может не совпадать с тем,
+// как он называется в таблице матча.
+func slotFromPlayerID(e *manta.Entity) (int, bool) {
+	raw, ok := e.GetUint32("m_iPlayerID")
+	if !ok || raw > 18 || raw%2 != 0 {
+		return 0, false
+	}
+	idx := int(raw) / 2
+	if idx < 5 {
+		return idx, true
+	}
+	return 128 + idx - 5, true
+}
+
+// npcName переводит имя класса сущности в имя из боевого лога:
+// CDOTA_Unit_Hero_SpiritBreaker -> npc_dota_hero_spirit_breaker.
+func npcName(className string) string {
+	name := strings.TrimPrefix(className, "CDOTA_Unit_Hero_")
+	if name == className {
+		return ""
+	}
+	var b strings.Builder
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 && b.Len() > 0 && !strings.HasSuffix(b.String(), "_") {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r - 'A' + 'a')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return "npc_dota_hero_" + b.String()
 }

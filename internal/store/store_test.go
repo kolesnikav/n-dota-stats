@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kolesnikav/n-dota-stats/internal/corpus"
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/fixture"
 	"github.com/kolesnikav/n-dota-stats/internal/mvp"
@@ -221,68 +220,5 @@ func TestRoleHintRoundTrip(t *testing.T) {
 	role, ok := db.RoleHint(1, 2, 3)
 	if !ok || role != dota.RoleOfflane {
 		t.Fatalf("получили %v %v", role, ok)
-	}
-}
-
-// Корпус перцентилей должен переживать перезапуск: выборки и отметки о
-// матчах читаются обратно ровно теми же.
-func TestCorpusRoundTrip(t *testing.T) {
-	db := open(t)
-
-	c := corpus.New()
-	for i := 0; i < 500; i++ {
-		m := &dota.Match{
-			ID: int64(i + 1), Duration: 2400, LobbyType: 7, GameMode: 22,
-			Detail: dota.DetailScoreboard,
-		}
-		for j := 0; j < 10; j++ {
-			slot := j
-			if j >= 5 {
-				slot = 128 + j - 5
-			}
-			m.Players = append(m.Players, &dota.Player{
-				Slot: slot, HeroID: 1, IsRadiant: j < 5,
-				GPM: 300 + i%400, XPM: 500, LastHits: 100,
-			})
-		}
-		if !c.AddMatch(m) {
-			t.Fatalf("матч %d не принят", i)
-		}
-		if err := db.CorpusAddMatch(m.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := c.Flush(db); err != nil {
-		t.Fatal(err)
-	}
-
-	back, err := corpus.Load(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := back.Games(1), c.Games(1); got != want {
-		t.Errorf("после перезагрузки игр %d, было %d", got, want)
-	}
-	was, err := c.Curve(1, "gold_per_min")
-	if err != nil {
-		t.Fatal(err)
-	}
-	now, err := back.Curve(1, "gold_per_min")
-	if err != nil {
-		t.Fatalf("кривая после перезагрузки не строится: %v", err)
-	}
-	for i := range was {
-		if was[i] != now[i] {
-			t.Errorf("точка %d: %v вместо %v", i, now[i], was[i])
-		}
-	}
-	if !db.CorpusHasMatch(1) {
-		t.Error("отметка о матче потеряна")
-	}
-	if db.CorpusHasMatch(999999) {
-		t.Error("неучтённый матч считается учтённым")
-	}
-	if matches, series := db.CorpusSize(); matches != 500 || series == 0 {
-		t.Errorf("размер корпуса: матчей %d, рядов %d", matches, series)
 	}
 }

@@ -412,3 +412,21 @@ func setInt(dst *int, src *int) {
 		*dst = *src
 	}
 }
+
+// Explorer выполняет SQL к открытой базе OpenDota и возвращает строки.
+//
+// Этим считаются медианы по ролям: своей базы публичных матчей у нас нет, а
+// explorer отдаёт агрегат по десяткам тысяч игр одним запросом.
+func (c *Client) Explorer(query string) ([]map[string]any, error) {
+	var doc struct {
+		Rows []map[string]any `json:"rows"`
+		Err  string           `json:"err"`
+	}
+	if err := c.get("/explorer?sql="+url.QueryEscape(query), &doc); err != nil {
+		return nil, err
+	}
+	if doc.Err != "" {
+		return nil, fmt.Errorf("explorer: %s", doc.Err)
+	}
+	return doc.Rows, nil
+}

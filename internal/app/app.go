@@ -2,7 +2,6 @@
 package app
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/benchmarks"
-	"github.com/kolesnikav/n-dota-stats/internal/corpus"
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
@@ -38,13 +36,7 @@ type App struct {
 	Source MatchSource
 	OD     *odota.Client
 	Salt   gc.Provider
-	// Corpus — свои перцентили. Пока по герою не набрано игр, кривая берётся
-	// из снимка OpenDota, поэтому поле можно оставить пустым.
-	Corpus *corpus.Corpus
-	// Harvest — фоновый сбор корпуса. Пусто, если нет ключа Steam Web API:
-	// публичный поток матчей отдаёт только Valve.
-	Harvest *corpus.Harvester
-	Log     func(format string, args ...any)
+	Log    func(format string, args ...any)
 
 	// незавершённые диалоги: чат -> что ждём от него
 	pending map[int64]string
@@ -99,36 +91,11 @@ func (a *App) LoadMatch(matchID int64, forAccount int64) (*dota.Match, error) {
 			rp.Apply(m)
 		}
 	}
-	benchmarks.Apply(a.curves(), m)
-	a.Collect(m)
+	benchmarks.Apply(a.DB, m)
 	analysis.DetectRoles(m, func(acc int64, hero, lane int) (dota.Role, bool) {
 		return a.DB.RoleHint(acc, hero, lane)
 	})
 	return m, nil
-}
-
-// curves — источник кривых: свои, пока хватает игр, иначе снимок OpenDota.
-func (a *App) curves() benchmarks.Curves {
-	return corpus.Blend{Own: a.Corpus, Fallback: a.DB}
-}
-
-// Collect добавляет матч в корпус перцентилей. Матчи наших пользователей
-// достаются нам даром — было бы расточительством их не учитывать, хотя основной
-// объём даёт обход публичного потока.
-func (a *App) Collect(m *dota.Match) {
-	if a.Corpus == nil || m == nil || a.DB.CorpusHasMatch(m.ID) {
-		return
-	}
-	if !a.Corpus.AddMatch(m) {
-		return
-	}
-	if err := a.DB.CorpusAddMatch(m.ID); err != nil {
-		a.Log("корпус: пометка матча %d: %v", m.ID, err)
-		return
-	}
-	if err := a.Corpus.Flush(a.DB); err != nil {
-		a.Log("корпус: сохранение выборок: %v", err)
-	}
 }
 
 // Report считает сводку и сохраняет связь матча с пользователем.
@@ -204,9 +171,11 @@ func (a *App) Run() error {
 		_ = a.DB.Put("tg_token", fp)
 	}
 
+	a.LoadMedians()
+
 	nextWatch := time.Now()
 	nextBench := time.Now()
-	nextCorpus := time.Now()
+	nextMedians := time.Now()
 
 	a.Log("бот запущен, источник матчей: %s", a.Source.Name())
 	for {
@@ -220,9 +189,16 @@ func (a *App) Run() error {
 			nextBench = now.Add(12 * time.Hour)
 			go a.refreshBenchmarks()
 		}
-		if a.Harvest != nil && now.After(nextCorpus) {
-			nextCorpus = now.Add(corpusInterval)
-			go a.harvestTick()
+		if now.After(nextMedians) {
+			nextMedians = now.Add(6 * time.Hour)
+			go func() {
+				if !a.mediansStale() {
+					return
+				}
+				if err := a.RefreshMedians(); err != nil {
+					a.Log("медианы ролей: %v", err)
+				}
+			}()
 		}
 
 		updates, err := a.Bot.GetUpdates(offset, 25)
@@ -247,26 +223,6 @@ func tokenFingerprint(token string) string {
 	}
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:8])
-}
-
-// corpusInterval — как часто добираем корпус. Проход в 200 запросов идёт около
-// трёх с половиной минут и приносит 20 000 матчей; раз в час этого с избытком
-// хватает, чтобы окно ехало за текущим патчем.
-const corpusInterval = time.Hour
-
-// corpusRequests — сколько запросов делаем за проход. Суточный лимит ключа —
-// 100 000, так что 200 в час это четверть процента квоты.
-const corpusRequests = 200
-
-func (a *App) harvestTick() {
-	st, err := a.Harvest.Run(context.Background(), corpusRequests)
-	if err != nil {
-		a.Log("корпус: %v", err)
-	}
-	if st.Added > 0 {
-		ready, total := a.Corpus.Ready()
-		a.Log("корпус: добавлено %d матчей, своя кривая у %d героев из %d", st.Added, ready, total)
-	}
 }
 
 func (a *App) refreshBenchmarks() {
