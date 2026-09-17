@@ -99,15 +99,42 @@ func TestShortSummaryStaysShort(t *testing.T) {
 	}
 }
 
-// Показатели, требующие разбора реплея, не должны появляться на сыром скорборде.
-func TestReplayMetricsHiddenWithoutParse(t *testing.T) {
+// Показатель появляется тогда и только тогда, когда значение действительно
+// есть, а не по объявленному уровню готовности.
+//
+// Раньше проверялось обратное — что метрики прячутся на «сыром» скорборде, — и
+// это скрывало данные, которые уже были: стаки помечены «метаданными», хотя
+// приходят с разбором, и на матче с готовым разбором строка пропадала.
+func TestMetricShownWhenValuePresent(t *testing.T) {
+	watched := map[string]bool{"Стаки": true, "Варды": true, "Участие в файтах": true}
+
 	m, _ := fixture.Match8999344582()
 	analysis.DetectRoles(m, nil)
 	m.Detail = dota.DetailScoreboard
 	p := m.FindByHero("Mirana")
+	shown := map[string]bool{}
 	for _, l := range analysis.Build(m, p, nil, false) {
-		if l.Label == "Стаки" || l.Label == "Варды" || l.Label == "Участие в файтах" {
-			t.Errorf("показатель %q не должен показываться без разбора", l.Label)
+		if watched[l.Label] {
+			shown[l.Label] = true
+		}
+	}
+	for label := range watched {
+		if !shown[label] {
+			t.Errorf("показатель %q спрятан, хотя значение есть", label)
+		}
+	}
+
+	// А без значений те же показатели показываться не должны.
+	m2, _ := fixture.Match8999344582()
+	analysis.DetectRoles(m2, nil)
+	m2.Detail = dota.DetailReplay
+	q := m2.FindByHero("Mirana")
+	q.ObsPlaced, q.SenPlaced = 0, 0
+	q.CampsStacked, q.HasStacks = 0, false
+	q.TeamfightParticipation = 0
+	for _, l := range analysis.Build(m2, q, nil, false) {
+		if watched[l.Label] {
+			t.Errorf("показатель %q показан, хотя значения нет", l.Label)
 		}
 	}
 }

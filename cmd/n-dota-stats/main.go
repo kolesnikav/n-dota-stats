@@ -249,11 +249,6 @@ func mustUsers(db *store.DB) []store.User {
 }
 
 func printMetrics() {
-	needs := map[dota.Detail]string{
-		dota.DetailScoreboard: "таблица",
-		dota.DetailMeta:       "метаданные",
-		dota.DetailReplay:     "реплей",
-	}
 	compare := map[analysis.CompareKind]string{
 		analysis.CompareHeroPercentile: "перцентиль героя",
 		analysis.CompareRoleMedian:     "медиана роли",
@@ -287,7 +282,7 @@ func printMetrics() {
 				if group == "" {
 					group = "прочее"
 				}
-				fmt.Printf("   %-9s %-32s %-11s %s\n", group, m.Label, needs[m.Needs], base)
+				fmt.Printf("   %-9s %-32s %-16s %s\n", group, m.Label, m.From, base)
 			}
 		}
 	}
@@ -305,7 +300,7 @@ func printMetrics() {
 		for _, id := range m.Heroes {
 			heroes = append(heroes, dota.HeroName(id))
 		}
-		fmt.Printf("   %-32s %-11s %-16s %s\n", m.Label, needs[m.Needs],
+		fmt.Printf("   %-32s %-11s %-16s %s\n", m.Label, m.From,
 			scopes[m.EffectiveScope()], strings.Join(heroes, ", "))
 	}
 
