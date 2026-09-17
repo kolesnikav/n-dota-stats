@@ -434,11 +434,12 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_DAMAGE {
 			// Попадание по герою: считаем только урон героя по герою и только
 			// от способности — обычные атаки нам не нужны.
-			// Иллюзии носят имя своего героя, поэтому одной проверки имени
-			// мало: удар по иллюзии — не попадание по герою, а урон от
-			// иллюзии — не заслуга игрока. С обоими условиями сходимость с
-			// OpenDota выше всего: 127 из 128 против 125 без второго условия.
-			if entry.GetIsTargetIllusion() || entry.GetIsAttackerIllusion() {
+			// Иллюзии носят имя своего героя, и одной проверки имени мало.
+			// Но правило несимметрично, и это выяснено перебором записей:
+			// удар ПО иллюзии попаданием по герою не считается, а урон ОТ
+			// своей иллюзии считается — иллюзия бьёт по-настоящему, и это
+			// вклад игрока. Так же считает OpenDota.
+			if entry.GetIsTargetIllusion() {
 				return nil
 			}
 			tgt, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetTargetName()))
@@ -499,9 +500,19 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		target, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetTargetName()))
 		attacker := actor(p, entry)
 		if strings.HasPrefix(target, "npc_dota_neutral_") {
-			if slot, ok := slots[attacker]; ok {
-				res.player(slot).NeutralKills++
+			slot, ok := slots[attacker]
+			if !ok {
+				return nil
 			}
+			// Подчинённый крип носит то же имя, но переходит в команду
+			// хозяина. Добить своего же подчинённого — не фарм леса, и
+			// OpenDota такие смерти не считает. А вот чужого подчинённого
+			// считает, поэтому сравниваем команды, а не просто смотрим,
+			// что цель не нейтральная.
+			if entry.GetTargetTeam() == teamOfSlot(slot) {
+				return nil
+			}
+			res.player(slot).NeutralKills++
 			return nil
 		}
 		switch target {
@@ -563,6 +574,14 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		sort.Slice(ps.Wards, func(i, j int) bool { return ps.Wards[i].Placed < ps.Wards[j].Placed })
 	}
 	return res, nil
+}
+
+// teamOfSlot — номер команды по слоту: 2 у Radiant, 3 у Dire.
+func teamOfSlot(slot int) uint32 {
+	if slot < 128 {
+		return 2
+	}
+	return 3
 }
 
 // actor возвращает того, кому засчитывается действие.

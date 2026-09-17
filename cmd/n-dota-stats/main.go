@@ -183,7 +183,7 @@ func main() {
 	}
 
 	if *verify > 0 {
-		if err := runVerify(od, *verify, *demPath); err != nil {
+		if err := runVerify(db, od, *verify, *demPath); err != nil {
 			fmt.Fprintln(os.Stderr, "ошибка:", err)
 			os.Exit(1)
 		}
@@ -377,7 +377,7 @@ func env(key, def string) string {
 //
 // Эталон берётся у OpenDota намеренно: свои значения нужно с чем-то сравнивать,
 // а других полных публичных данных по матчу нет.
-func runVerify(od *odota.Client, matchID int64, demPath string) error {
+func runVerify(db *store.DB, od *odota.Client, matchID int64, demPath string) error {
 	ref, _, err := odota.NewSource(od).Match(matchID)
 	if err != nil {
 		return fmt.Errorf("матч у OpenDota: %w", err)
@@ -394,9 +394,15 @@ func runVerify(od *odota.Client, matchID int64, demPath string) error {
 			return fmt.Errorf("разбор реплея: %w", err)
 		}
 	} else {
-		salt, err := replaySalt(matchID)
-		if err != nil {
-			return err
+		// Сохранённый ключ избавляет от сессии Game Coordinator — а заодно
+		// от драки за неё с работающим ботом.
+		cluster, saved, ok := db.ReplaySalt(matchID)
+		salt := gc.Salt{Cluster: cluster, Salt: saved}
+		if !ok {
+			var err error
+			if salt, err = replaySalt(matchID); err != nil {
+				return err
+			}
 		}
 		res, err = replay.Fetch(nil, salt.Cluster, matchID, salt.Salt, ref)
 		if err != nil {
