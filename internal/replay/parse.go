@@ -5,15 +5,25 @@
 // Здесь эти величины считаются сами.
 //
 // Что извлекается:
+//   - весь итоговый счёт матча: убийства, смерти, помощь, уровень, добивания,
+//     денаи, нетворс, золото и опыт, урон по героям и строениям, контроль,
+//     стаки, руны, варды, участие в файтах;
 //   - обзорные варды и сентри: кто поставил, когда, где;
 //   - снятые чужие варды — из боевого лога;
 //   - поминутные кривые золота, опыта, добиваний и отказов;
 //   - смерти с координатами.
 //
-// Чего здесь пока нет: стаки лагерей и участие в файтах. Стаков нет в боевом
-// логе этого патча вообще — проверено перебором всех типов записей, события
-// NEUTRAL_CAMP_STACK не встречается ни разу. Их придётся считать слежением за
-// лагерями нейтралов, это отдельная работа.
+// Итоги лежат не в боевом логе, а в сущностях: CDOTA_DataRadiant и
+// CDOTA_DataDire (счёт по команде, пять игроков в каждой) и CDOTA_PlayerResource
+// (убийства, смерти, помощь, уровень, участие в файтах — по всем десяти).
+// Стаки там тоже есть, в поле m_iCampsStacked: искать их в боевом логе, как
+// делалось раньше, было ошибкой — события NEUTRAL_CAMP_STACK в нём нет вовсе.
+//
+// Чего воспроизвести не удалось: hero_healing в счёте Valve. Поле m_fHealing
+// считает что-то другое — у Мипо оно даёт 33 798 при нуле у Valve, у
+// Джаггернаута ноль при 5039. Лечение по боевому логу тоже не сходится: туда
+// попадает регенерация и вампиризм. Поэтому лечение остаётся из скорборда, а
+// своё считается отдельной величиной HealAllies — вылечено союзным героям.
 package replay
 
 import (
@@ -48,6 +58,9 @@ type Death struct {
 }
 
 // PlayerStats — что удалось посчитать по игроку.
+//
+// Итоги матча берутся из сущностей самого реплея, а не из скорборда: сущности
+// есть всегда, а скорборд может прийти неразобранным и таким остаться.
 type PlayerStats struct {
 	Slot      int
 	ObsPlaced int
@@ -60,7 +73,59 @@ type PlayerStats struct {
 	DNT       []int
 	Wards     []Ward
 	Deaths    []Death
+
+	// HealAllies — вылечено союзным героям, без самолечения. Считается по
+	// боевому логу. Со счётом Valve это намеренно разные величины: их
+	// hero_healing воспроизвести не удалось (см. docs/replay.md), а для оценки
+	// саппорта «сколько вылечил союзникам» и осмысленнее.
+	HealAllies int
+
+	// Totals — итоговые значения на конец матча. Заполняются, только если
+	// сущности встретились: HasTotals отличает «ноль» от «не считали».
+	Totals Totals
 }
+
+// Totals — итоговый счёт игрока по данным реплея.
+type Totals struct {
+	Has bool
+
+	Kills   int
+	Died    int // смертей; поле Deaths уже занято списком смертей с координатами
+	Assists int
+	Level   int
+
+	LastHits int
+	Denies   int
+	NetWorth int
+	Gold     int // всего заработано золота
+	XP       int // всего заработано опыта
+
+	HeroDamage  int
+	TowerDamage int
+	Healing     int
+
+	Stuns        float64
+	CampsStacked int
+	RunePickups  int
+
+	ObsPlaced      int
+	SenPlaced      int
+	WardsDestroyed int
+	WardsPurchased int
+
+	TPScrolls   int
+	SmokesUsed  int
+	TowerKills  int
+	RoshanKills int
+
+	TeamfightParticipation float64
+	RankTier               int
+	Name                   string
+	AccountID              int64
+}
+
+// steamOffset переводит 64-битный Steam ID в номер аккаунта Dota.
+const steamOffset = 76561197960265728
 
 // Result — итог разбора.
 type Result struct {
@@ -114,6 +179,15 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		return nil, fmt.Errorf("открыть реплей: %w", err)
 	}
 	slots, slotsByKey := buildHeroSlots(m)
+	// Сведения об игроках лежат в реплее в своём порядке — по подключению, а
+	// не по игровому слоту, и между ними попадаются наблюдатели. Надёжная
+	// привязка одна: номер аккаунта.
+	slotByAccount := map[int64]int{}
+	for _, p := range m.Players {
+		if p.AccountID > 0 {
+			slotByAccount[p.AccountID] = p.Slot
+		}
+	}
 	res := &Result{Duration: m.Duration, Players: map[int]*PlayerStats{}}
 
 	// Начало игры определяем по первому спавну баунти-руны: они появляются
@@ -127,6 +201,8 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 	// сущности Radiant и Dire обновляются независимо, и общий счётчик отдавал
 	// минуту той, что успела первой, а вторую оставлял с нулями.
 	lastMinute := map[string]int{"CDOTA_DataRadiant": -1, "CDOTA_DataDire": -1}
+	// Когда в последний раз снимали итоги с каждой сущности.
+	lastTotals := map[string]int{}
 
 	// Использования вардовых предметов из боевого лога. По ним определяется
 	// владелец обзорного варда: у самой сущности ссылки на хозяина нет.
@@ -216,6 +292,21 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			}
 
 		case cn == "CDOTA_DataRadiant" || cn == "CDOTA_DataDire":
+			base := 0
+			if cn == "CDOTA_DataDire" {
+				base = 128
+			}
+			// Итоги снимаем не чаще раза в две секунды игрового времени:
+			// сущность обновляется по многу раз в секунду, а перечитывать два
+			// десятка полей на каждое обновление незачем — важно лишь
+			// последнее значение.
+			if int(p.Tick)-lastTotals[cn] >= 2*tickRate {
+				lastTotals[cn] = int(p.Tick)
+				for i := 0; i < 5; i++ {
+					readTeamTotals(e, fmt.Sprintf("m_vecDataTeam.%04d.", i), &res.player(base+i).Totals)
+				}
+			}
+
 			t := gameTime()
 			if t < 0 {
 				return nil
@@ -225,10 +316,6 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 				return nil
 			}
 			lastMinute[cn] = minute
-			base := 0
-			if cn == "CDOTA_DataDire" {
-				base = 128
-			}
 			for i := 0; i < 5; i++ {
 				ps := res.player(base + i)
 				pre := fmt.Sprintf("m_vecDataTeam.%04d.", i)
@@ -236,6 +323,34 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 				ps.XPT = appendAt(ps.XPT, minute, intProp(e, pre+"m_iTotalEarnedXP"))
 				ps.LHT = appendAt(ps.LHT, minute, intProp(e, pre+"m_iLastHitCount"))
 				ps.DNT = appendAt(ps.DNT, minute, intProp(e, pre+"m_iDenyCount"))
+			}
+
+		case cn == "CDOTA_PlayerResource":
+			// Убийства, смерти, помощь, уровень и участие в файтах лежат
+			// отдельно от остального счёта — в общей на обе команды сущности,
+			// где игроки нумеруются подряд от нуля до девяти.
+			if int(p.Tick)-lastTotals[cn] < 2*tickRate {
+				return nil
+			}
+			lastTotals[cn] = int(p.Tick)
+			for i := 0; i < 10; i++ {
+				slot := i
+				if i >= 5 {
+					slot = 128 + i - 5
+				}
+				readTeamData(e, i, &res.player(slot).Totals)
+			}
+			for i := 0; i < 24; i++ {
+				pre := fmt.Sprintf("m_vecPlayerData.%04d.", i)
+				steam, ok := e.GetUint64(pre + "m_iPlayerSteamID")
+				if !ok {
+					break
+				}
+				slot, ok := slotByAccount[int64(steam)-steamOffset]
+				if !ok {
+					continue // наблюдатель или пустая ячейка
+				}
+				readPlayerData(e, pre, &res.player(slot).Totals)
 			}
 		}
 		return nil
@@ -254,6 +369,21 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			att, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
 			if slot, ok := slots[att]; ok {
 				wardUses = append(wardUses, wardUse{Time: tick(), Slot: slot})
+			}
+			return nil
+		}
+		if entry.GetType() == mdota.DOTA_COMBATLOG_TYPES_DOTA_COMBATLOG_HEAL {
+			// Лечение считаем по боевому логу: поле m_fHealing в сущности —
+			// другой счётчик, он завышает у Мипо и обнуляется у Джаггернаута.
+			att, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetAttackerName()))
+			tgt, _ := p.LookupStringByIndex("CombatLogNames", int32(entry.GetTargetName()))
+			slot, ok := slots[att]
+			if !ok {
+				return nil
+			}
+			ps := res.player(slot)
+			if _, isHero := slots[tgt]; isHero && tgt != att {
+				ps.HealAllies += int(entry.GetValue())
 			}
 			return nil
 		}
@@ -447,10 +577,93 @@ func (r *Result) Apply(m *dota.Match) int {
 		if len(ps.GoldT) > 0 {
 			p.GoldT, p.XPT, p.LHT = ps.GoldT, ps.XPT, ps.LHT
 		}
+		// Итоги матча берём из реплея и перекрываем ими скорборд. Это и есть
+		// смысл своего разбора: скорборд может прийти неразобранным и таким
+		// остаться навсегда, а реплей полон всегда. Сверка с публичными
+		// данными — команда --verify.
+		if t := ps.Totals; t.Has {
+			mins := m.DurationMinutes()
+			p.Kills, p.Deaths, p.Assists = t.Kills, t.Died, t.Assists
+			p.Level = t.Level
+			p.LastHits, p.Denies = t.LastHits, t.Denies
+			p.NetWorth = t.NetWorth
+			if mins > 0 {
+				p.GPM = int(float64(t.Gold)/mins + 0.5)
+				p.XPM = int(float64(t.XP)/mins + 0.5)
+			}
+			p.HeroDamage, p.TowerDamage = t.HeroDamage, t.TowerDamage
+			// Лечение намеренно не перекрываем: счёт Valve воспроизвести не
+			// удалось ни по сущности, ни по боевому логу (docs/replay.md).
+			p.Stuns = t.Stuns
+			p.CampsStacked, p.HasStacks = t.CampsStacked, true
+			p.RunePickups = t.RunePickups
+			p.TeamfightParticipation = t.TeamfightParticipation
+			// Счётчики вардов из сущности точнее нашего слежения: оно нужно
+			// ради координат и времени жизни, а не ради количества.
+			p.ObsPlaced, p.SenPlaced = t.ObsPlaced, t.SenPlaced
+		}
 		applied++
 	}
 	if applied > 0 {
 		m.Detail = dota.DetailReplay
 	}
 	return applied
+}
+
+// readTeamTotals снимает счёт игрока с командной сущности.
+// Ноль в поле — нормальное значение, поэтому Has взводится по факту того, что
+// сущность вообще встретилась, а не по ненулевому счёту.
+func readTeamTotals(e *manta.Entity, pre string, t *Totals) {
+	t.Has = true
+	t.LastHits = intProp(e, pre+"m_iLastHitCount")
+	t.Denies = intProp(e, pre+"m_iDenyCount")
+	t.NetWorth = intProp(e, pre+"m_iNetWorth")
+	t.Gold = intProp(e, pre+"m_iTotalEarnedGold")
+	t.XP = intProp(e, pre+"m_iTotalEarnedXP")
+	t.CampsStacked = intProp(e, pre+"m_iCampsStacked")
+	t.RunePickups = intProp(e, pre+"m_iRunePickups")
+	t.ObsPlaced = intProp(e, pre+"m_iObserverWardsPlaced")
+	t.SenPlaced = intProp(e, pre+"m_iSentryWardsPlaced")
+	t.WardsDestroyed = intProp(e, pre+"m_iWardsDestroyed")
+	t.WardsPurchased = intProp(e, pre+"m_iWardsPurchased")
+	t.TPScrolls = intProp(e, pre+"m_iTPScrollsPurchased")
+	t.SmokesUsed = intProp(e, pre+"m_iSmokesUsed")
+	t.TowerKills = intProp(e, pre+"m_iTowerKills")
+	t.RoshanKills = intProp(e, pre+"m_iRoshanKills")
+	t.HeroDamage = int(floatProp(e, pre+"m_flHeroDamage"))
+	t.TowerDamage = int(floatProp(e, pre+"m_flTowerDamage"))
+	t.Healing = int(floatProp(e, pre+"m_fHealing"))
+	t.Stuns = float64(floatProp(e, pre+"m_fStuns"))
+	if v, ok := e.GetUint64(pre + "m_iPlayerSteamID"); ok && v > steamOffset {
+		t.AccountID = int64(v) - steamOffset
+	}
+}
+
+// readTeamData снимает то, что лежит в m_vecPlayerTeamData: эта часть
+// нумеруется по игровому слоту, от нуля до девяти.
+func readTeamData(e *manta.Entity, idx int, t *Totals) {
+	pre := fmt.Sprintf("m_vecPlayerTeamData.%04d.", idx)
+	t.Kills = intProp(e, pre+"m_iKills")
+	t.Died = intProp(e, pre+"m_iDeaths")
+	t.Assists = intProp(e, pre+"m_iAssists")
+	t.Level = intProp(e, pre+"m_iLevel")
+	t.TeamfightParticipation = float64(floatProp(e, pre+"m_flTeamFightParticipation"))
+}
+
+// readPlayerData снимает то, что лежит в m_vecPlayerData.
+func readPlayerData(e *manta.Entity, pre string, t *Totals) {
+	if v := intProp(e, pre+"m_iRankTier"); v > 0 {
+		t.RankTier = v
+	}
+	if v, ok := e.GetString(pre + "m_iszPlayerName"); ok && v != "" {
+		t.Name = v
+	}
+}
+
+// floatProp читает вещественное поле, какого бы точного типа оно ни было.
+func floatProp(e *manta.Entity, name string) float32 {
+	if v, ok := e.GetFloat32(name); ok {
+		return v
+	}
+	return 0
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
 	"github.com/kolesnikav/n-dota-stats/internal/odota"
+	"github.com/kolesnikav/n-dota-stats/internal/replay"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
 	"github.com/kolesnikav/n-dota-stats/internal/telegram"
 	"github.com/kolesnikav/n-dota-stats/internal/valve"
@@ -37,6 +38,8 @@ func main() {
 		gcTest   = flag.Int64("gc-test", 0, "проверить цепочку: ключ реплея, метаданные, разбор — и выйти")
 		harvest  = flag.Int("corpus", 0, "набрать корпус перцентилей: N запросов к Steam по 100 матчей, и выйти")
 		corpStat = flag.Bool("corpus-stats", false, "показать состояние своего корпуса перцентилей и выйти")
+		verify   = flag.Int64("verify", 0, "сверить свой разбор матча с данными OpenDota и выйти")
+		demPath  = flag.String("dem", "", "готовый файл реплея для --verify (иначе качается через GC)")
 	)
 	flag.Parse()
 
@@ -171,6 +174,14 @@ func main() {
 		fmt.Println()
 		fmt.Println(strip(res.Text()))
 		fmt.Printf("заняло: %s\n", res.Elapsed.Round(time.Second))
+		return
+	}
+
+	if *verify > 0 {
+		if err := runVerify(od, *verify, *demPath); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -482,4 +493,56 @@ func seedCorpus(db *store.DB, own *corpus.Corpus, log func(string, ...any)) {
 	if added > 0 {
 		log("корпус: добавлено %d своих матчей", added)
 	}
+}
+
+// runVerify сверяет наш разбор реплея с публичными данными OpenDota.
+//
+// Эталон берётся у OpenDota намеренно: свои значения нужно с чем-то сравнивать,
+// а других полных публичных данных по матчу нет.
+func runVerify(od *odota.Client, matchID int64, demPath string) error {
+	ref, _, err := odota.NewSource(od).Match(matchID)
+	if err != nil {
+		return fmt.Errorf("матч у OpenDota: %w", err)
+	}
+	var res *replay.Result
+	if demPath != "" {
+		f, err := os.Open(demPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		res, err = replay.Parse(f, ref)
+		if err != nil {
+			return fmt.Errorf("разбор реплея: %w", err)
+		}
+	} else {
+		salt, err := replaySalt(matchID)
+		if err != nil {
+			return err
+		}
+		res, err = replay.Fetch(nil, salt.Cluster, matchID, salt.Salt, ref)
+		if err != nil {
+			return fmt.Errorf("скачивание и разбор реплея: %w", err)
+		}
+	}
+	v := app.Verify(matchID, ref, res)
+	fmt.Print(v.Text())
+	if v.Agreed() {
+		fmt.Println("\nвсё сходится")
+	}
+	return nil
+}
+
+// replaySalt поднимает разовую сессию Game Coordinator за ключом реплея.
+func replaySalt(matchID int64) (gc.Salt, error) {
+	cli := gc.NewSteam(os.Getenv("STEAM_BOT_USER"), os.Getenv("STEAM_BOT_PASS"),
+		os.Getenv("STEAM_GUARD_CODE"), os.Getenv("STEAM_TWO_FACTOR_CODE"),
+		func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := cli.Start(ctx, 90*time.Second); err != nil {
+		return gc.Salt{}, fmt.Errorf("Game Coordinator: %w", err)
+	}
+	defer cli.Close()
+	return cli.ReplaySalt(matchID)
 }
