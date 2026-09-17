@@ -33,6 +33,8 @@ func (a *App) onCallback(u telegram.Update) {
 		a.markCallback(chatID, msgID, parts)
 	case "u": // админка
 		a.adminCallback(chatID, msgID, parts)
+	case "h": // листание истории
+		a.historyCallback(chatID, msgID, parts)
 	}
 }
 

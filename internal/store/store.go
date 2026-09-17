@@ -1026,3 +1026,31 @@ func (d *DB) ReplaySalt(matchID int64) (cluster int, salt uint32, ok bool) {
 	}
 	return int(c.Int64), uint32(s.Int64), true
 }
+
+// UserMatchAt возвращает матч пользователя по его номеру в списке от свежего
+// к старому и общее число матчей. Отдельный запрос вместо выборки всего
+// списка: матчей за год набирается несколько сотен, а для страницы нужен один.
+func (d *DB) UserMatchAt(accountID int64, index int) (matchID int64, total int, err error) {
+	if err = d.sql.QueryRow(
+		`SELECT count(*) FROM match_users WHERE account_id=?`, accountID).Scan(&total); err != nil {
+		return 0, 0, err
+	}
+	if total == 0 {
+		return 0, 0, nil
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index >= total {
+		index = total - 1
+	}
+	err = d.sql.QueryRow(`
+		SELECT mu.match_id FROM match_users mu
+		JOIN matches m ON m.match_id = mu.match_id
+		WHERE mu.account_id = ?
+		ORDER BY m.start_time DESC LIMIT 1 OFFSET ?`, accountID, index).Scan(&matchID)
+	if err != nil {
+		return 0, total, err
+	}
+	return matchID, total, nil
+}

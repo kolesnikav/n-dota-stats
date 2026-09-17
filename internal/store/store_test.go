@@ -222,3 +222,42 @@ func TestRoleHintRoundTrip(t *testing.T) {
 		t.Fatalf("получили %v %v", role, ok)
 	}
 }
+
+// Листание истории: страница берётся по номеру, края не выходят за список.
+func TestUserMatchAt(t *testing.T) {
+	db := open(t)
+	const acc = int64(42)
+	for i := 0; i < 3; i++ {
+		m := &dota.Match{ID: int64(100 + i), StartTime: int64(1000 + i), Duration: 2000}
+		if err := db.SaveMatch(m, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.LinkMatchUser(store.MatchUser{
+			MatchID: m.ID, AccountID: acc, ChatID: 7, Role: dota.RoleMid,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Свежий матч первый.
+	id, total, err := db.UserMatchAt(acc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || id != 102 {
+		t.Errorf("страница 0: матч %d из %d, ждали 102 из 3", id, total)
+	}
+	if id, _, _ := db.UserMatchAt(acc, 2); id != 100 {
+		t.Errorf("страница 2: матч %d, ждали 100", id)
+	}
+	// За границами отдаём крайние, а не пустоту.
+	if id, _, _ := db.UserMatchAt(acc, 99); id != 100 {
+		t.Errorf("за концом списка вернулся матч %d, ждали последний 100", id)
+	}
+	if id, _, _ := db.UserMatchAt(acc, -5); id != 102 {
+		t.Errorf("до начала списка вернулся матч %d, ждали первый 102", id)
+	}
+	// У чужого аккаунта истории нет.
+	if _, total, _ := db.UserMatchAt(777, 0); total != 0 {
+		t.Errorf("у постороннего аккаунта нашлось %d матчей", total)
+	}
+}

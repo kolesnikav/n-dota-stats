@@ -17,9 +17,7 @@ const helpText = `<b>Что я умею</b>
 
 /last — разобрать последний матч
 /match <i>id</i> — разобрать конкретный матч
-/stats — сколько накоплено и как часто я угадываю
-/fit — пересчитать веса формулы по твоим исправлениям
-/weights — показать текущие веса
+/history — листать свои матчи
 /watch on|off — слежение за новыми матчами
 /backfill <i>дней</i> — загрузить историю матчей (по умолчанию год)
 /me — мои настройки
@@ -29,6 +27,19 @@ const helpText = `<b>Что я умею</b>
 
 После матча я показываю показатели твоей роли и свой топ-3. Нажми кнопки и
 укажи, кого Dota показала на самом деле — на этих исправлениях учится формула.`
+
+// adminHelp — то, что дописывается к справке для админа. Команды про формулу
+// вынесены сюда намеренно: веса общие на бота, и обычному пользователю нечего
+// их пересчитывать.
+const adminHelp = `
+
+<b>Только для админа</b>
+
+/users — карточки пользователей
+/budget — остаток суточного лимита Game Coordinator
+/stats — сколько накоплено и как часто формула угадывает
+/fit — пересчитать веса по исправлениям
+/weights — текущие веса`
 
 var accountRe = regexp.MustCompile(`(\d{4,12})`)
 
@@ -65,19 +76,27 @@ func (a *App) onCommand(chatID int64, text, name string) {
 		a.pending[chatID] = "account"
 		_, _ = a.Bot.Send(chatID, "Пришли ID аккаунта Dota или ссылку на профиль.", nil)
 	case "/help":
-		_, _ = a.Bot.Send(chatID, helpText, nil)
+		_, _ = a.Bot.Send(chatID, a.helpFor(chatID), nil)
 	case "/me":
 		a.cmdMe(chatID)
 	case "/last":
 		a.cmdLast(chatID)
 	case "/match":
 		a.cmdMatch(chatID, arg)
+	case "/history":
+		a.cmdHistory(chatID)
 	case "/stats":
-		a.cmdStats(chatID)
+		if a.adminOnly(chatID) {
+			a.cmdStats(chatID)
+		}
 	case "/fit":
-		a.cmdFit(chatID)
+		if a.adminOnly(chatID) {
+			a.cmdFit(chatID)
+		}
 	case "/weights":
-		a.cmdWeights(chatID)
+		if a.adminOnly(chatID) {
+			a.cmdWeights(chatID)
+		}
 	case "/watch":
 		a.cmdWatch(chatID, arg)
 	case "/backfill":
@@ -97,6 +116,25 @@ func (a *App) onCommand(chatID int64, text, name string) {
 	}
 }
 
+// helpFor — справка с учётом прав: админские команды видит только админ.
+func (a *App) helpFor(chatID int64) string {
+	if a.isAdmin(chatID) {
+		return helpText + adminHelp
+	}
+	return helpText
+}
+
+// adminOnly отвечает отказом, если команда не для этого пользователя.
+// Отвечаем так же, как на неизвестную команду: незачем сообщать, что такая
+// команда существует.
+func (a *App) adminOnly(chatID int64) bool {
+	if a.isAdmin(chatID) {
+		return true
+	}
+	_, _ = a.Bot.Send(chatID, "Не знаю такой команды. /help", nil)
+	return false
+}
+
 func (a *App) cmdStart(chatID int64, name string) {
 	if u, ok := a.DB.User(chatID); ok {
 		switch u.Status {
@@ -105,7 +143,7 @@ func (a *App) cmdStart(chatID int64, name string) {
 		case store.StatusPending:
 			_, _ = a.Bot.Send(chatID, "Заявка уже отправлена, жду подтверждения админа.", nil)
 		default:
-			_, _ = a.Bot.Send(chatID, fmt.Sprintf("Уже слежу за аккаунтом <b>%d</b>.\n\n%s", u.AccountID, helpText), nil)
+			_, _ = a.Bot.Send(chatID, fmt.Sprintf("Уже слежу за аккаунтом <b>%d</b>.\n\n%s", u.AccountID, a.helpFor(chatID)), nil)
 		}
 		return
 	}
@@ -150,7 +188,7 @@ func (a *App) finishRegistration(chatID int64, text, name string) {
 	if first {
 		_, _ = a.Bot.Send(chatID, fmt.Sprintf(
 			"Аккаунт <b>%d</b> привязан. Ты первый — значит, ты <b>админ</b>: "+
-				"новых пользователей подтверждаешь через /users.\n\n%s", accountID, helpText), nil)
+				"новых пользователей подтверждаешь через /users.\n\n%s", accountID, a.helpFor(chatID)), nil)
 	} else {
 		_, _ = a.Bot.Send(chatID,
 			"Аккаунт привязан. Жду подтверждения админа — после него начну разбирать твои матчи.", nil)
