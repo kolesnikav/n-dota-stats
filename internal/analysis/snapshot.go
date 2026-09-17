@@ -42,6 +42,7 @@ type Snapshot struct {
 	HeroID    int       `json:"hero"`
 
 	Hero       string `json:"hero_name"`
+	StartTime  int64  `json:"start,omitempty"`
 	Duration   int    `json:"duration"`
 	Win        bool   `json:"win"`
 	Kills      int    `json:"k"`
@@ -64,7 +65,7 @@ func Snap(m *dota.Match, p *dota.Player) Snapshot {
 	c := &Ctx{Match: m, Player: p, Opponent: LaneOpponent(m, p)}
 	snap := Snapshot{
 		MatchID: m.ID, AccountID: p.AccountID, Role: p.Role, HeroID: p.HeroID,
-		Hero: p.Name(), Duration: m.Duration, Win: p.Win,
+		Hero: p.Name(), StartTime: m.StartTime, Duration: m.Duration, Win: p.Win,
 		Kills: p.Kills, Deaths: p.Deaths, Assists: p.Assists,
 		RankTier:   p.RankTier,
 		RoleManual: p.RoleSource == dota.SourceManual,

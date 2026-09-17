@@ -5,6 +5,7 @@ import (
 	"html"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
@@ -14,6 +15,35 @@ import (
 )
 
 func clock(sec int) string { return fmt.Sprintf("%d:%02d", sec/60, sec%60) }
+
+// matchTime печатает, когда игра началась, по часам сервера.
+//
+// Близкие даты называем словами: «вчера в 21:14» читается быстрее, чем
+// «16.09 в 21:14», а именно близкие матчи и смотрят чаще всего. Год
+// добавляется только когда он не нынешний — иначе это шум.
+func matchTime(unix int64) string {
+	if unix <= 0 {
+		return ""
+	}
+	t := time.Unix(unix, 0)
+	now := time.Now()
+	day := func(x time.Time) time.Time {
+		return time.Date(x.Year(), x.Month(), x.Day(), 0, 0, 0, 0, x.Location())
+	}
+	// Собираем из кусков, а не одним шаблоном: Go подставляет числа даже в
+	// том, что выглядит обычным текстом, и однажды это выстрелит.
+	at := t.Format("15:04")
+	switch days := int(day(now).Sub(day(t)).Hours() / 24); {
+	case days == 0:
+		return "сегодня в " + at
+	case days == 1:
+		return "вчера в " + at
+	case t.Year() == now.Year():
+		return t.Format("02.01") + " в " + at
+	default:
+		return t.Format("02.01.2006") + " в " + at
+	}
+}
 
 func esc(s string) string { return html.EscapeString(s) }
 
@@ -70,7 +100,11 @@ func (r *Report) header() []string {
 	if r.Snap.Win {
 		outcome = "Победа"
 	}
-	head := []string{fmt.Sprintf("<b>%s</b> · %s", outcome, clock(r.Snap.Duration))}
+	line := fmt.Sprintf("<b>%s</b> · %s", outcome, clock(r.Snap.Duration))
+	if when := matchTime(r.Snap.StartTime); when != "" {
+		line += " · " + when
+	}
+	head := []string{line}
 
 	second := fmt.Sprintf("%s · %s · %d/%d/%d",
 		esc(r.Snap.Hero), esc(r.Snap.Role.String()), r.Snap.Kills, r.Snap.Deaths, r.Snap.Assists)
