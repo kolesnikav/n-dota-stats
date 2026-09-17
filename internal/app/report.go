@@ -148,9 +148,25 @@ func (r *Report) top3() []string {
 			i+1, esc(s.Player.Name()), s.Player.SideName(), s.Score*100, mark))
 	}
 	if r.Place > 3 {
-		out = append(out, fmt.Sprintf("Ты — <b>%d-е место</b> из %d", r.Place, len(r.Ranked)))
+		row := fmt.Sprintf("Ты — <b>%d-е место</b> из %d", r.Place, len(r.Ranked))
+		// Цифра нужна всегда, а не только когда попал в тройку: по ней видно,
+		// отстал ты на волос или вдвое.
+		if s, ok := r.own(); ok {
+			row += fmt.Sprintf(" · <b>%.0f</b>", s.Score*100)
+		}
+		out = append(out, row)
 	}
 	return out
+}
+
+// own находит собственную строку в ранжировании.
+func (r *Report) own() (mvp.Scored, bool) {
+	for _, s := range r.Ranked {
+		if s.Player == r.Player {
+			return s, true
+		}
+	}
+	return mvp.Scored{}, false
 }
 
 func (r *Report) footer() []string {
