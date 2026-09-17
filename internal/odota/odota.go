@@ -380,6 +380,7 @@ func Decode(raw []byte) (*dota.Match, error) {
 		setInt(&p.SenPlaced, rp.SenPlaced)
 		setInt(&p.ObsKilled, rp.ObserverKills)
 		setInt(&p.SenKilled, rp.SentryKills)
+		p.FromScoreboard = true
 		setInt(&p.CampsStacked, rp.CampsStacked)
 		p.HasStacks = rp.CampsStacked != nil
 		setInt(&p.NeutralKills, rp.NeutralKills)

@@ -731,16 +731,23 @@ func (r *Result) Apply(m *dota.Match) int {
 		// остаться навсегда, а реплей полон всегда. Сверка с публичными
 		// данными — команда --verify.
 		if t := ps.Totals; t.Has {
-			mins := m.DurationMinutes()
-			p.Kills, p.Deaths, p.Assists = t.Kills, t.Died, t.Assists
-			p.Level = t.Level
-			p.LastHits, p.Denies = t.LastHits, t.Denies
-			p.NetWorth = t.NetWorth
-			if mins > 0 {
-				p.GPM = int(float64(t.Gold)/mins + 0.5)
-				p.XPM = int(float64(t.XP)/mins + 0.5)
+			// Основные числа перекрываем, только если таблицы Valve нет.
+			// Они у неё из первых рук, а наш пересчёт их лишь воспроизводит —
+			// и у Meepo расходится: счётчик m_iTotalEarnedXP у него отстаёт
+			// на 5144 опыта, потому что клоны собирают его мимо основного
+			// юнита. У остальных девяти игроков того матча сходилось точно.
+			if !p.FromScoreboard {
+				mins := m.DurationMinutes()
+				p.Kills, p.Deaths, p.Assists = t.Kills, t.Died, t.Assists
+				p.Level = t.Level
+				p.LastHits, p.Denies = t.LastHits, t.Denies
+				p.NetWorth = t.NetWorth
+				if mins > 0 {
+					p.GPM = int(float64(t.Gold)/mins + 0.5)
+					p.XPM = int(float64(t.XP)/mins + 0.5)
+				}
+				p.HeroDamage, p.TowerDamage = t.HeroDamage, t.TowerDamage
 			}
-			p.HeroDamage, p.TowerDamage = t.HeroDamage, t.TowerDamage
 			// Лечение намеренно не перекрываем: счёт Valve воспроизвести не
 			// удалось ни по сущности, ни по боевому логу (docs/replay.md).
 			p.Stuns = t.Stuns
