@@ -188,7 +188,7 @@ func (a *App) Refresh(matchID int64) {
 		}
 		if mu.MessageID > 0 {
 			if err := a.EditSummary(mu.ChatID, mu.MessageID, rep.Text(), rep,
-				roleRow(matchID)); err != nil {
+				viewCtx{Kind: "s"}, roleRow(matchID)); err != nil {
 				a.Log("обновление сводки %d: %v", matchID, err)
 			}
 		}

@@ -26,6 +26,7 @@ func (a *App) cmdHistory(chatID int64) {
 		return
 	}
 	_, err := a.SendSummary(chatID, page.Text, page.Report,
+		viewCtx{Kind: "h", Page: page.Index},
 		navRow(page.Index, page.Total, ownHistoryData))
 	if err != nil {
 		a.Log("история у %d: %v", chatID, err)
@@ -47,6 +48,7 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 		return
 	}
 	if err := a.EditSummary(chatID, msgID, page.Text, page.Report,
+		viewCtx{Kind: "h", Page: page.Index},
 		navRow(page.Index, page.Total, ownHistoryData)); err != nil {
 		a.Log("правка истории у %d: %v", chatID, err)
 	}

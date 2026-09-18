@@ -291,3 +291,16 @@ func (b *Bot) EditPhoto(chatID, messageID int64, caption, filename string, data 
 	}
 	return nil
 }
+
+// Delete удаляет сообщение бота.
+//
+// Телеграм не даёт превратить текстовое сообщение в сообщение с картинкой,
+// поэтому переключение между сводкой и картой делается заменой: старое
+// сообщение удаляется, новое встаёт на его место. Удалять свои сообщения бот
+// может только двое суток — дальше остаётся отправить новое.
+func (b *Bot) Delete(chatID, messageID int64) error {
+	return b.call("deleteMessage", map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	}, nil)
+}

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/kolesnikav/n-dota-stats/internal/analysis"
@@ -120,22 +121,52 @@ func (a *App) reportFromSnapshot(accountID, matchID int64) (*Report, bool) {
 }
 
 // summaryKeyboard — кнопки под текстовой сводкой.
-func summaryKeyboard(matchID, accountID int64, extra ...[]telegram.Button) telegram.Keyboard {
-	kb := telegram.Keyboard{}
-	if row := mapRow(matchID, accountID); row != nil {
-		kb = append(kb, row)
-	}
+func summaryKeyboard(matchID, accountID int64, ctx viewCtx, extra ...[]telegram.Button) telegram.Keyboard {
+	kb := telegram.Keyboard{mapRow(matchID, accountID, ctx)}
 	return append(kb, extra...)
 }
 
 // SendSummary отправляет текстовую сводку.
-func (a *App) SendSummary(chatID int64, text string, rep *Report, extra ...[]telegram.Button) (int64, error) {
+func (a *App) SendSummary(chatID int64, text string, rep *Report, ctx viewCtx, extra ...[]telegram.Button) (int64, error) {
 	return a.Bot.Send(chatID, text,
-		summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, extra...))
+		summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, ctx, extra...))
 }
 
 // EditSummary правит текстовую сводку на месте.
-func (a *App) EditSummary(chatID, msgID int64, text string, rep *Report, extra ...[]telegram.Button) error {
+func (a *App) EditSummary(chatID, msgID int64, text string, rep *Report, ctx viewCtx, extra ...[]telegram.Button) error {
 	return a.Bot.Edit(chatID, msgID, text,
-		summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, extra...))
+		summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, ctx, extra...))
+}
+
+// summaryView собирает сводку и кнопки для места, откуда её открыли.
+func (a *App) summaryView(chatID, accountID, matchID int64, ctx viewCtx) (string, [][]telegram.Button, bool) {
+	switch ctx.Kind {
+	case "h":
+		page, ok := a.historyPage(accountID, ctx.Page)
+		if !ok {
+			return "", nil, false
+		}
+		return page.Text, [][]telegram.Button{navRow(page.Index, page.Total, ownHistoryData)}, true
+	case "u":
+		u, ok := a.DB.User(ctx.Target)
+		if !ok {
+			return "", nil, false
+		}
+		page, ok := a.historyPage(u.AccountID, ctx.Page)
+		if !ok {
+			return "", nil, false
+		}
+		data := func(n int) string { return fmt.Sprintf("u:g:%d:%d:%d", ctx.Target, ctx.Card, n) }
+		back := []telegram.Button{{Text: "назад", Data: fmt.Sprintf("u:p:%d", ctx.Card)}}
+		title := fmt.Sprintf("<b>Матчи %s</b>\n", esc(u.Nickname))
+		return title + page.Text, [][]telegram.Button{
+			navRow(page.Index, page.Total, data), back,
+		}, true
+	default:
+		rep, ok := a.reportFromSnapshot(accountID, matchID)
+		if !ok {
+			return "", nil, false
+		}
+		return rep.Text(), [][]telegram.Button{roleRow(matchID)}, true
+	}
 }

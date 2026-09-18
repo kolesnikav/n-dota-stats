@@ -148,7 +148,7 @@ func (a *App) SendReport(chatID, accountID, matchID int64, askMVP bool) error {
 	if err != nil {
 		return err
 	}
-	msgID, err := a.SendSummary(chatID, rep.Text(), rep, roleRow(matchID))
+	msgID, err := a.SendSummary(chatID, rep.Text(), rep, viewCtx{Kind: "s"}, roleRow(matchID))
 	if err != nil {
 		return err
 	}

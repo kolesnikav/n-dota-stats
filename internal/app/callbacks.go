@@ -37,6 +37,8 @@ func (a *App) onCallback(u telegram.Update) {
 		a.mapCallback(chatID, msgID, parts, false)
 	case "kk": // переключение окна карты в самой картинке
 		a.mapCallback(chatID, msgID, parts, true)
+	case "b": // возврат от карты к сводке
+		a.backCallback(chatID, msgID, parts)
 	case "h": // листание истории
 		a.historyCallback(chatID, msgID, parts)
 	}
@@ -82,7 +84,7 @@ func (a *App) roleCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	if err := a.EditSummary(chatID, msgID, rep.Text(), rep, roleRow(matchID)); err != nil {
+	if err := a.EditSummary(chatID, msgID, rep.Text(), rep, viewCtx{Kind: "s"}, roleRow(matchID)); err != nil {
 		a.Log("правка сводки %d: %v", matchID, err)
 	}
 }
@@ -292,7 +294,8 @@ func (a *App) showUserHistory(chatID, msgID, target int64, card, page int) {
 		return
 	}
 	data := func(n int) string { return fmt.Sprintf("u:g:%d:%d:%d", target, card, n) }
-	if err := a.EditSummary(chatID, msgID, title+p.Text, p.Report,
+	ctx := viewCtx{Kind: "u", Target: target, Card: card, Page: p.Index}
+	if err := a.EditSummary(chatID, msgID, title+p.Text, p.Report, ctx,
 		navRow(p.Index, p.Total, data), back); err != nil {
 		a.Log("история пользователя %d: %v", target, err)
 	}
