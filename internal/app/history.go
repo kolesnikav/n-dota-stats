@@ -25,7 +25,7 @@ func (a *App) cmdHistory(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Матчей пока нет. /backfill — загрузить историю.", nil)
 		return
 	}
-	_, _, err := a.sendSummaryText(chatID, page.Text, page.Report,
+	_, err := a.SendSummary(chatID, page.Text, page.Report,
 		navRow(page.Index, page.Total, ownHistoryData))
 	if err != nil {
 		a.Log("история у %d: %v", chatID, err)
@@ -46,7 +46,7 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 	if !ok {
 		return
 	}
-	if err := a.editSummaryText(chatID, msgID, KindPhoto, page.Text, page.Report, windowMatch,
+	if err := a.EditSummary(chatID, msgID, page.Text, page.Report,
 		navRow(page.Index, page.Total, ownHistoryData)); err != nil {
 		a.Log("правка истории у %d: %v", chatID, err)
 	}
@@ -83,7 +83,7 @@ func (a *App) historyPage(accountID int64, index int) (HistoryPage, bool) {
 		rep = built
 	}
 	head := fmt.Sprintf("<i>Матч %d из %d</i>\n", index+1, total)
-	return HistoryPage{Report: rep, Text: caption(head + rep.Text()), Index: index, Total: total}, true
+	return HistoryPage{Report: rep, Text: head + rep.Text(), Index: index, Total: total}, true
 }
 
 // ownHistoryData — адрес страницы своей истории.

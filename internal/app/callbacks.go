@@ -34,7 +34,9 @@ func (a *App) onCallback(u telegram.Update) {
 	case "u": // админка
 		a.adminCallback(chatID, msgID, parts)
 	case "k": // тепловая карта
-		a.mapCallback(chatID, msgID, parts, cq.Message.ReplyMarkup.InlineKeyboard)
+		a.mapCallback(chatID, msgID, parts, false)
+	case "kk": // переключение окна карты в самой картинке
+		a.mapCallback(chatID, msgID, parts, true)
 	case "h": // листание истории
 		a.historyCallback(chatID, msgID, parts)
 	}
@@ -80,8 +82,7 @@ func (a *App) roleCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	_, kind := a.DB.MessageInfo(matchID, u.AccountID)
-	if err := a.EditSummary(chatID, msgID, kind, rep, windowMatch, roleRow(matchID)); err != nil {
+	if err := a.EditSummary(chatID, msgID, rep.Text(), rep, roleRow(matchID)); err != nil {
 		a.Log("правка сводки %d: %v", matchID, err)
 	}
 }
@@ -291,15 +292,8 @@ func (a *App) showUserHistory(chatID, msgID, target int64, card, page int) {
 		return
 	}
 	data := func(n int) string { return fmt.Sprintf("u:g:%d:%d:%d", target, card, n) }
-	text := caption(title + p.Text)
-	// Карточка пользователя — текстовое сообщение, и превратить его в
-	// картинку телеграм не даст. Поэтому первая страница уходит новым
-	// сообщением с картинкой, а карточка остаётся на месте.
-	if err := a.editSummaryText(chatID, msgID, KindPhoto, text, p.Report, windowMatch,
+	if err := a.EditSummary(chatID, msgID, title+p.Text, p.Report,
 		navRow(p.Index, p.Total, data), back); err != nil {
-		if _, _, err := a.sendSummaryText(chatID, text, p.Report,
-			navRow(p.Index, p.Total, data), back); err != nil {
-			a.Log("история пользователя %d: %v", target, err)
-		}
+		a.Log("история пользователя %d: %v", target, err)
 	}
 }

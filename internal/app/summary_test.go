@@ -7,32 +7,28 @@ import (
 
 // Подпись к картинке ограничена телеграмом, и разметка в предел не идёт.
 func TestVisibleLen(t *testing.T) {
-	if got := visibleLen("<b>раз</b> два"); got != 7 {
+	if got := VisibleLen("<b>раз</b> два"); got != 7 {
 		t.Errorf("видимых символов %d, ждали 7", got)
 	}
-	if got := visibleLen("без разметки"); got != 12 {
+	if got := VisibleLen("без разметки"); got != 12 {
 		t.Errorf("видимых символов %d, ждали 12", got)
 	}
 }
 
-// Длинная сводка урезается по разделам, а не по символам: обрубок на полуслове
-// выглядит поломкой, а сводка без рейтинга — просто короче.
-func TestCaptionTrimsBySection(t *testing.T) {
-	// Тело помещается в предел, а вместе с рейтингом — уже нет.
-	body := strings.Repeat("строка показателя\n", 55)
-	text := body + "<b>ЛУЧШИЕ ПО МОЕЙ ФОРМУЛЕ</b>\n1. Кто-то\n2. Кто-то\n3. Кто-то"
-	if visibleLen(body) > captionLimit {
-		t.Fatalf("тело теста само длиннее предела: %d", visibleLen(body))
-	}
+// Длинная подпись урезается вместе с разметкой, а не по символам: обрубленный
+// тег телеграм не принимает вовсе, и вместо картинки не приходит ничего.
+// Именно на этом /history и замолчала.
+func TestCaptionStripsTagsWhenTooLong(t *testing.T) {
+	text := "<b>шапка</b>\n" + strings.Repeat("<i>строка показателя</i>\n", 70)
 	got := caption(text)
-	if strings.Contains(got, "ЛУЧШИЕ") {
-		t.Error("рейтинг остался, хотя подпись не помещалась")
+	if VisibleLen(got) > captionLimit {
+		t.Errorf("подпись длиной %d, предел %d", VisibleLen(got), captionLimit)
 	}
-	if visibleLen(got) > captionLimit {
-		t.Errorf("подпись длиной %d, предел %d", visibleLen(got), captionLimit)
+	if strings.ContainsAny(got, "<>") {
+		t.Errorf("в урезанной подписи осталась разметка: %q", got[:60])
 	}
-	if !strings.HasSuffix(got, "показателя") {
-		t.Errorf("подпись обрывается не по разделу: ...%q", got[len(got)-30:])
+	if !strings.HasSuffix(got, "…") {
+		t.Error("обрезка не помечена многоточием")
 	}
 }
 

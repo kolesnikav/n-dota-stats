@@ -159,9 +159,9 @@ func Open(path string) (*DB, error) {
 		`ALTER TABLE matches ADD COLUMN retry_after INTEGER DEFAULT 0`,
 		`ALTER TABLE matches ADD COLUMN seq_num INTEGER DEFAULT 0`,
 		`ALTER TABLE match_users ADD COLUMN snapshot TEXT`,
-		// Вид отправленного сообщения: текст или картинка с подписью.
-		// Телеграм не даёт превратить одно в другое, поэтому править сводку
-		// нужно тем же способом, каким она была отправлена.
+		// Колонка осталась от попытки слать сводку картинкой с подписью.
+		// Затея не прижилась — сводка в подпись не помещается, — но ломать
+		// уже накатанные базы ради её удаления незачем.
 		`ALTER TABLE match_users ADD COLUMN message_kind TEXT`,
 		// Свой корпус перцентилей был ошибкой: медианы и кривые берём у
 		// OpenDota. Таблицы сносим, чтобы не занимать место зря.
@@ -455,11 +455,9 @@ type MatchUser struct {
 	Role      dota.Role
 	Source    dota.Source
 	MessageID int64
-	// MessageKind — "photo" у сводки с картинкой, иначе текст.
-	MessageKind string
-	Predicted   []int
-	Snapshot    []byte // сводка матча: значения показателей и пометки, привязанные к матчу
-	Actual      []int
+	Predicted []int
+	Snapshot  []byte // сводка матча: значения показателей и пометки, привязанные к матчу
+	Actual    []int
 }
 
 // LinkMatchUser сохраняет связь и прогноз модели.
@@ -494,10 +492,9 @@ func (d *DB) HasMatchUser(matchID, accountID int64) bool {
 }
 
 // SetMessageID запоминает сообщение со сводкой, чтобы потом его дополнить.
-func (d *DB) SetMessageID(matchID, accountID, messageID int64, kind string) error {
-	_, err := d.sql.Exec(
-		`UPDATE match_users SET message_id=?, message_kind=? WHERE match_id=? AND account_id=?`,
-		messageID, kind, matchID, accountID)
+func (d *DB) SetMessageID(matchID, accountID, messageID int64) error {
+	_, err := d.sql.Exec(`UPDATE match_users SET message_id=? WHERE match_id=? AND account_id=?`,
+		messageID, matchID, accountID)
 	return err
 }
 
@@ -543,8 +540,7 @@ func (d *DB) SetRole(matchID, accountID int64, role dota.Role, src dota.Source) 
 // Participants возвращает пользователей бота, игравших в матче.
 func (d *DB) Participants(matchID int64) ([]MatchUser, error) {
 	rows, err := d.sql.Query(
-		`SELECT match_id,account_id,chat_id,COALESCE(role,0),COALESCE(role_source,''),
-		        COALESCE(message_id,0),COALESCE(message_kind,'')
+		`SELECT match_id,account_id,chat_id,COALESCE(role,0),COALESCE(role_source,''),COALESCE(message_id,0)
 		 FROM match_users WHERE match_id=?`, matchID)
 	if err != nil {
 		return nil, err
@@ -555,8 +551,7 @@ func (d *DB) Participants(matchID int64) ([]MatchUser, error) {
 		var mu MatchUser
 		var role int
 		var src string
-		if err := rows.Scan(&mu.MatchID, &mu.AccountID, &mu.ChatID, &role, &src,
-			&mu.MessageID, &mu.MessageKind); err != nil {
+		if err := rows.Scan(&mu.MatchID, &mu.AccountID, &mu.ChatID, &role, &src, &mu.MessageID); err != nil {
 			return nil, err
 		}
 		mu.Role = dota.Role(role)
@@ -1135,13 +1130,4 @@ func (d *DB) AllMatchIDs() ([]int64, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
-}
-
-// MessageInfo — номер и вид сообщения со сводкой.
-func (d *DB) MessageInfo(matchID, accountID int64) (messageID int64, kind string) {
-	_ = d.sql.QueryRow(
-		`SELECT COALESCE(message_id,0), COALESCE(message_kind,'')
-		 FROM match_users WHERE match_id=? AND account_id=?`,
-		matchID, accountID).Scan(&messageID, &kind)
-	return messageID, kind
 }

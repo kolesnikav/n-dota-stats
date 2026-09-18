@@ -4,22 +4,36 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/telegram"
 )
 
-// Переключатель тепловой карты.
+// Тепловая карта приходит отдельной картинкой по кнопке.
 //
-// Карта показывается прямо в сводке, поэтому кнопки не «показать карту», а
-// «какую карту». Активное окно помечено, и нажать на него нельзя — иначе
-// сообщение правилось бы само в себя, а телеграм на это отвечает ошибкой.
+// Кнопок две: под сводкой — «карта», она присылает картинку; под самой
+// картинкой — переключатель окна, который правит её на месте. Разделение
+// нужно потому, что телеграм не даёт превратить текстовое сообщение в
+// сообщение с картинкой: править на месте можно только то, что уже картинка.
 
-// mapSwitch — ряд кнопок выбора окна карты.
+// mapRow — кнопка карты под текстовой сводкой.
+func mapRow(matchID, accountID int64) []telegram.Button {
+	return []telegram.Button{{
+		Text: "тепловая карта",
+		Data: fmt.Sprintf("k:%d:%s:%d", matchID, windowMatch, accountID),
+	}}
+}
+
+// mapSwitch — переключатель окна под самой картинкой. Текущее окно помечено и
+// не нажимается: телеграм отвечает ошибкой на правку сообщения тем же самым.
 func mapSwitch(matchID, accountID int64, current string) []telegram.Button {
 	label := func(window, text string) telegram.Button {
 		if window == current {
 			return telegram.Button{Text: "· " + text + " ·", Data: "noop"}
 		}
-		return telegram.Button{Text: text, Data: fmt.Sprintf("k:%d:%s:%d", matchID, window, accountID)}
+		return telegram.Button{
+			Text: text,
+			Data: fmt.Sprintf("kk:%d:%s:%d", matchID, window, accountID),
+		}
 	}
 	return []telegram.Button{
 		label(windowMatch, "вся игра"),
@@ -27,8 +41,11 @@ func mapSwitch(matchID, accountID int64, current string) []telegram.Button {
 	}
 }
 
-// mapCallback перерисовывает карту в том же сообщении.
-func (a *App) mapCallback(chatID, msgID int64, parts []string, kb telegram.Keyboard) {
+// mapCallback присылает карту картинкой или правит её на месте.
+//
+// edit различает два случая: нажали кнопку под сводкой — присылаем новую
+// картинку; нажали переключатель под самой картинкой — правим её.
+func (a *App) mapCallback(chatID, msgID int64, parts []string, edit bool) {
 	if len(parts) < 3 {
 		return
 	}
@@ -55,19 +72,52 @@ func (a *App) mapCallback(chatID, msgID int64, parts []string, kb telegram.Keybo
 			account = id
 		}
 	}
-	rep, ok := a.reportFromSnapshot(account, matchID)
+	snap, ok := a.snapshotOf(matchID, account)
 	if !ok {
+		_, _ = a.Bot.Send(chatID, "По этому матчу нет сохранённой сводки.", nil)
 		return
 	}
-	// Остальные ряды кнопок оставляем как были: под сводкой это смена роли,
-	// в истории — стрелки, в админском виджете ещё и «назад». Телеграм
-	// присылает клавиатуру вместе с нажатием, поэтому её не нужно ни
-	// запоминать, ни передавать в данных кнопки.
-	extra := make([]([]telegram.Button), 0, len(kb))
-	if len(kb) > 1 {
-		extra = append(extra, kb[1:]...)
+	img := mapFor(snap, window)
+	if img == nil {
+		_, _ = a.Bot.Send(chatID,
+			"Путь героя по этому матчу не сохранён — он появляется после разбора реплея.", nil)
+		return
 	}
-	if err := a.EditSummary(chatID, msgID, KindPhoto, rep, window, extra...); err != nil {
-		a.Log("правка карты %d: %v", matchID, err)
+
+	kb := telegram.Keyboard{mapSwitch(matchID, account, window)}
+	name := fmt.Sprintf("map_%d_%s.jpg", matchID, window)
+	text := mapCaption(snap, window)
+	if edit {
+		if err := a.Bot.EditPhoto(chatID, msgID, text, name, img, kb); err != nil {
+			a.Log("правка карты %d: %v", matchID, err)
+		}
+		return
 	}
+	if _, err := a.Bot.SendPhoto(chatID, text, name, img, kb); err != nil {
+		a.Log("отправка карты %d: %v", matchID, err)
+	}
+}
+
+// mapCaption — короткая подпись под картинкой. Сводка остаётся в своём
+// сообщении, здесь достаточно напомнить, чья это карта и за какой отрезок.
+func mapCaption(snap analysis.Snapshot, window string) string {
+	when := "вся игра"
+	if window == windowLane {
+		when = "до 10:00"
+	}
+	died := 0
+	for _, d := range snap.DeathsAt {
+		if window != windowLane || d.T <= laneWindow {
+			died++
+		}
+	}
+	return fmt.Sprintf("<b>%s</b> · %s · %s\n%s · крестами отмечены смерти (%d)",
+		esc(snap.Hero), esc(snap.Role.String()), outcomeWord(snap.Win), when, died)
+}
+
+func outcomeWord(win bool) string {
+	if win {
+		return "победа"
+	}
+	return "поражение"
 }
