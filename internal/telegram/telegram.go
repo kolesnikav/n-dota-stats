@@ -72,6 +72,13 @@ type Update struct {
 			Chat      struct {
 				ID int64 `json:"id"`
 			} `json:"chat"`
+			// ReplyMarkup — клавиатура сообщения, под которым нажали кнопку.
+			// Телеграм присылает её сам, и это избавляет от нужды тащить весь
+			// разворот кнопок через данные кнопки: достаточно поменять тот
+			// ряд, который относится к нажатию, а остальные оставить как есть.
+			ReplyMarkup struct {
+				InlineKeyboard Keyboard `json:"inline_keyboard"`
+			} `json:"reply_markup"`
 		} `json:"message"`
 	} `json:"callback_query"`
 }
@@ -220,4 +227,67 @@ func (b *Bot) SendPhoto(chatID int64, caption, filename string, data []byte, kb 
 		return 0, fmt.Errorf("sendPhoto: %s", envelope.Description)
 	}
 	return envelope.Result.MessageID, nil
+}
+
+// EditPhoto заменяет картинку и подпись в уже отправленном сообщении.
+//
+// Телеграм не позволяет превратить текстовое сообщение в сообщение с
+// картинкой и наоборот: тип задаётся при отправке. Поэтому этот метод годится
+// только для сообщений, которые изначально отправлены картинкой.
+func (b *Bot) EditPhoto(chatID, messageID int64, caption, filename string, data []byte, kb Keyboard) error {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	_ = w.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	_ = w.WriteField("message_id", strconv.FormatInt(messageID, 10))
+
+	// Картинка прикладывается файлом, а в описании media на неё ссылаются
+	// через attach:// — иначе телеграм ждёт ссылку или уже известный ему файл.
+	media := map[string]any{"type": "photo", "media": "attach://photo"}
+	if caption != "" {
+		media["caption"] = caption
+		media["parse_mode"] = "HTML"
+	}
+	raw, err := json.Marshal(media)
+	if err != nil {
+		return err
+	}
+	_ = w.WriteField("media", string(raw))
+	if len(kb) > 0 {
+		markup, err := json.Marshal(map[string]any{"inline_keyboard": kb})
+		if err != nil {
+			return err
+		}
+		_ = w.WriteField("reply_markup", string(markup))
+	}
+	part, err := w.CreateFormFile("photo", filename)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+
+	resp, err := b.HTTP.Post(b.url("editMessageMedia"), w.FormDataContentType(), &body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	var envelope struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(out, &envelope); err != nil {
+		return fmt.Errorf("editMessageMedia: %s", truncate(string(out), 200))
+	}
+	if !envelope.OK {
+		return fmt.Errorf("editMessageMedia: %s", envelope.Description)
+	}
+	return nil
 }

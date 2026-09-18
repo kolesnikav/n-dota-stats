@@ -148,11 +148,11 @@ func (a *App) SendReport(chatID, accountID, matchID int64, askMVP bool) error {
 	if err != nil {
 		return err
 	}
-	msgID, err := a.Bot.Send(chatID, rep.Text(), rep.Keyboard())
+	msgID, kind, err := a.SendSummary(chatID, rep, roleRow(matchID))
 	if err != nil {
 		return err
 	}
-	_ = a.DB.SetMessageID(matchID, accountID, msgID)
+	_ = a.DB.SetMessageID(matchID, accountID, msgID, kind)
 	if askMVP && len(a.DB.Actual(matchID, accountID)) == 0 {
 		_, _ = a.Bot.Send(chatID, stepQuestion[1], mvpKeyboard(matchID, rep.Ranked, 1, map[int]bool{}))
 	}

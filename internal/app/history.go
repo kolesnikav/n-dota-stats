@@ -1,19 +1,17 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 
-	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 	"github.com/kolesnikav/n-dota-stats/internal/telegram"
 )
 
 // Листание своей истории.
 //
-// Сводка каждой страницы считается заново и подменяет текст того же сообщения,
-// а не шлёт новое: иначе пролистанная история превращается в десяток
-// одинаковых по виду сообщений, среди которых не найти нужное.
+// Страницы подменяют одно и то же сообщение, а не шлют новые: иначе
+// пролистанная история превращается в десяток одинаковых по виду сообщений,
+// среди которых не найти нужное.
 
 // cmdHistory открывает историю с самого свежего матча.
 func (a *App) cmdHistory(chatID int64) {
@@ -22,12 +20,16 @@ func (a *App) cmdHistory(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Сначала привяжи аккаунт: /start", nil)
 		return
 	}
-	text, matchID, index, total, ok := a.historyPage(u.AccountID, 0)
+	page, ok := a.historyPage(u.AccountID, 0)
 	if !ok {
 		_, _ = a.Bot.Send(chatID, "Матчей пока нет. /backfill — загрузить историю.", nil)
 		return
 	}
-	_, _ = a.Bot.Send(chatID, text, historyNav(index, total, ownHistoryData, mapButtons(matchID, u.AccountID)))
+	_, _, err := a.sendSummaryText(chatID, page.Text, page.Report,
+		navRow(page.Index, page.Total, ownHistoryData))
+	if err != nil {
+		a.Log("история у %d: %v", chatID, err)
+	}
 }
 
 // historyCallback перелистывает историю, переписывая то же сообщение.
@@ -40,21 +42,29 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	text, matchID, index, total, ok := a.historyPage(u.AccountID, index)
+	page, ok := a.historyPage(u.AccountID, index)
 	if !ok {
 		return
 	}
-	if err := a.Bot.Edit(chatID, msgID, text,
-		historyNav(index, total, ownHistoryData, mapButtons(matchID, u.AccountID))); err != nil {
+	if err := a.editSummaryText(chatID, msgID, KindPhoto, page.Text, page.Report, windowMatch,
+		navRow(page.Index, page.Total, ownHistoryData)); err != nil {
 		a.Log("правка истории у %d: %v", chatID, err)
 	}
 }
 
-// historyPage готовит страницу: сводку матча под номером index и кнопки.
-func (a *App) historyPage(accountID int64, index int) (text string, matchID int64, page, total int, ok bool) {
+// HistoryPage — одна страница истории.
+type HistoryPage struct {
+	Report *Report
+	Text   string
+	Index  int
+	Total  int
+}
+
+// historyPage готовит страницу: сводку матча под номером index.
+func (a *App) historyPage(accountID int64, index int) (HistoryPage, bool) {
 	matchID, total, err := a.DB.UserMatchAt(accountID, index)
 	if err != nil || total == 0 || matchID == 0 {
-		return "", 0, 0, 0, false
+		return HistoryPage{}, false
 	}
 	if index < 0 {
 		index = 0
@@ -62,48 +72,37 @@ func (a *App) historyPage(accountID int64, index int) (text string, matchID int6
 	if index >= total {
 		index = total - 1
 	}
-	head := fmt.Sprintf("<i>Матч %d из %d</i>\n\n", index+1, total)
-
-	// Сводка берётся из снимка: значения показателей и рейтинг посчитаны, когда
-	// матч разбирали, и с тех пор не меняются. Заново считаются только
-	// сравнения — медиана роли и своё среднее, — потому что они растут.
-	if blob, ok := a.DB.Snapshot(matchID, accountID); ok {
-		var snap analysis.Snapshot
-		if json.Unmarshal(blob, &snap) == nil && len(snap.Lines) > 0 {
-			rep := &Report{Snap: snap, Full: snap.Render(a.DB, false)}
-			return head + rep.Text(), matchID, index, total, true
+	rep, ok := a.reportFromSnapshot(accountID, matchID)
+	if !ok {
+		// Снимка нет — матч разобран до того, как их начали хранить.
+		// Считаем из матча, как раньше.
+		built, err := a.View(accountID, matchID)
+		if err != nil {
+			return HistoryPage{}, false
 		}
+		rep = built
 	}
-	// Снимка нет — матч разобран до того, как их начали хранить. Считаем как
-	// раньше, из матча.
-	rep, err := a.View(accountID, matchID)
-	if err != nil {
-		return fmt.Sprintf("Матч %d не разобрать: %v", matchID, err), matchID, index, total, true
-	}
-	return head + rep.Text(), matchID, index, total, true
+	head := fmt.Sprintf("<i>Матч %d из %d</i>\n", index+1, total)
+	return HistoryPage{Report: rep, Text: caption(head + rep.Text()), Index: index, Total: total}, true
 }
 
 // ownHistoryData — адрес страницы своей истории.
 func ownHistoryData(page int) string { return fmt.Sprintf("h:%d", page) }
 
-// historyNav — стрелки и счётчик. Стрелка на краю списка не исчезает, а
-// перестаёт быть ссылкой: прыгающие кнопки сбивают прицел.
-//
-// Адрес страницы задаётся снаружи: тот же виджет листает и свою историю, и
-// чужую в админке, отличаются они только тем, куда ведут кнопки.
-func historyNav(index, total int, data func(page int) string, extra ...[]telegram.Button) telegram.Keyboard {
+// navRow — стрелки и счётчик. Стрелка на краю списка не исчезает, а перестаёт
+// быть ссылкой: прыгающие кнопки сбивают прицел.
+func navRow(index, total int, data func(page int) string) []telegram.Button {
 	prev := telegram.Button{Text: "◀", Data: data(index - 1)}
 	next := telegram.Button{Text: "▶", Data: data(index + 1)}
 	if index <= 0 {
-		prev = telegram.Button{Text: "·", Data: data(0)}
+		prev = telegram.Button{Text: "·", Data: "noop"}
 	}
 	if index >= total-1 {
-		next = telegram.Button{Text: "·", Data: data(total - 1)}
+		next = telegram.Button{Text: "·", Data: "noop"}
 	}
-	kb := telegram.Keyboard{{
+	return []telegram.Button{
 		prev,
-		{Text: fmt.Sprintf("%d/%d", index+1, total), Data: data(index)},
+		{Text: fmt.Sprintf("%d/%d", index+1, total), Data: "noop"},
 		next,
-	}}
-	return append(kb, extra...)
+	}
 }

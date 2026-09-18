@@ -187,7 +187,10 @@ func (a *App) Refresh(matchID int64) {
 			continue
 		}
 		if mu.MessageID > 0 {
-			_ = a.Bot.Edit(mu.ChatID, mu.MessageID, rep.Text(), rep.Keyboard())
+			if err := a.EditSummary(mu.ChatID, mu.MessageID, mu.MessageKind, rep,
+				windowMatch, roleRow(matchID)); err != nil {
+				a.Log("обновление сводки %d: %v", matchID, err)
+			}
 		}
 	}
 }

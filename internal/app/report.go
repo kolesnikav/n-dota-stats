@@ -222,13 +222,9 @@ func (r *Report) Text() string {
 	return strings.Join(lines, "\n")
 }
 
-// Keyboard — кнопки под сводкой.
-func (r *Report) Keyboard() telegram.Keyboard {
-	id := strconv.FormatInt(r.Snap.MatchID, 10)
-	return telegram.Keyboard{
-		mapButtons(r.Snap.MatchID, r.Snap.AccountID),
-		{{Text: "сменить роль", Data: "r:" + id}},
-	}
+// roleRow — ряд с кнопкой смены роли.
+func roleRow(matchID int64) []telegram.Button {
+	return []telegram.Button{{Text: "сменить роль", Data: "r:" + strconv.FormatInt(matchID, 10)}}
 }
 
 // roleKeyboard — выбор роли.
