@@ -16,10 +16,25 @@ import (
 type Bot struct {
 	Token string
 	HTTP  *http.Client
+	// api — шаблон адреса метода: первым подставляется токен, вторым имя
+	// метода. Вынесен полем, чтобы тесты могли подсунуть свой сервер и не
+	// ходить в телеграм по-настоящему.
+	api string
 }
 
+const telegramAPI = "https://api.telegram.org/bot%s/%s"
+
 func New(token string) *Bot {
-	return &Bot{Token: token, HTTP: &http.Client{Timeout: 70 * time.Second}}
+	return &Bot{Token: token, HTTP: &http.Client{Timeout: 70 * time.Second}, api: telegramAPI}
+}
+
+// url собирает адрес метода.
+func (b *Bot) url(method string) string {
+	tmpl := b.api
+	if tmpl == "" {
+		tmpl = telegramAPI
+	}
+	return fmt.Sprintf(tmpl, b.Token, method)
 }
 
 // Button — кнопка inline-клавиатуры.
@@ -66,8 +81,7 @@ func (b *Bot) call(method string, params map[string]any, out any) error {
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", b.Token, method)
-	resp, err := b.HTTP.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := b.HTTP.Post(b.url(method), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -183,8 +197,7 @@ func (b *Bot) SendPhoto(chatID int64, caption, filename string, data []byte, kb 
 		return 0, err
 	}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", b.Token)
-	resp, err := b.HTTP.Post(url, w.FormDataContentType(), &body)
+	resp, err := b.HTTP.Post(b.url("sendPhoto"), w.FormDataContentType(), &body)
 	if err != nil {
 		return 0, err
 	}
