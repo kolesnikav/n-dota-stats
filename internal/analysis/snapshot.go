@@ -11,6 +11,10 @@ import "github.com/kolesnikav/n-dota-stats/internal/dota"
 // каждой игрой. Храня первое и пересчитывая второе, мы получаем историю,
 // которая не врёт про прошлое и при этом сравнивает с сегодняшним днём.
 
+// laneEnd — до какой секунды считаем происходящее стадией линий. Тот же
+// рубеж, что у добиваний к 10:00 и эффективности линии.
+const laneEnd = 600
+
 // SnapLine — один показатель в снимке.
 type SnapLine struct {
 	Key   string   `json:"k"`
@@ -54,6 +58,12 @@ type Snapshot struct {
 
 	Lines []SnapLine `json:"lines"`
 
+	// Heat — где игрок был на линии и где за весь матч. Лежит в снимке, а не
+	// считается при показе, потому что путь героя есть только в разборе
+	// реплея, и держать его ради этого негде.
+	HeatLane  Heat `json:"heat_lane,omitempty"`
+	HeatMatch Heat `json:"heat_match,omitempty"`
+
 	Top     []SnapTop `json:"top,omitempty"`
 	Place   int       `json:"place,omitempty"`
 	Score   float64   `json:"score,omitempty"`
@@ -70,6 +80,10 @@ func Snap(m *dota.Match, p *dota.Player) Snapshot {
 		RankTier:   p.RankTier,
 		RoleManual: p.RoleSource == dota.SourceManual,
 		Partial:    m.Detail < dota.DetailMeta,
+	}
+	if len(p.Path) > 0 {
+		snap.HeatLane = HeatMap(p, 0, laneEnd)
+		snap.HeatMatch = HeatMap(p, 0, 0)
 	}
 	for _, metric := range MetricsFor(p.Role, p.HeroID, false) {
 		if metric.Needs > m.Detail {

@@ -80,6 +80,25 @@ func (t Track) At(sec int) (x, y float64, ok bool) {
 	return float64(t.X[i]) / 4, float64(t.Y[i]) / 4, true
 }
 
+// Points разворачивает путь в список точек, пропуская незаполненные.
+func (t Track) Points() []dota.Point {
+	if t.Step <= 0 {
+		return nil
+	}
+	out := make([]dota.Point, 0, len(t.X))
+	for i := range t.X {
+		if i >= len(t.Y) || (t.X[i] == 0 && t.Y[i] == 0) {
+			continue
+		}
+		out = append(out, dota.Point{
+			T: i * t.Step,
+			X: float64(t.X[i]) / 4,
+			Y: float64(t.Y[i]) / 4,
+		})
+	}
+	return out
+}
+
 // Pickup — подобранный ресурс карты.
 type Pickup struct {
 	Time int    `json:"t"`
@@ -860,6 +879,11 @@ func (r *Result) Apply(m *dota.Match) int {
 			p.RunePickups = t.RunePickups
 			p.NeutralKills = ps.NeutralKills
 			p.Buybacks = ps.BuybackCount
+			p.Path = ps.Track.Points()
+			p.DeathsAt = make([]dota.Point, 0, len(ps.Deaths))
+			for _, d := range ps.Deaths {
+				p.DeathsAt = append(p.DeathsAt, dota.Point{T: d.Time, X: d.X, Y: d.Y})
+			}
 			p.WisdomShrines = t.WisdomShrines
 			p.LotusesTaken = t.LotusesTaken
 			if len(ps.ItemUses) > 0 {

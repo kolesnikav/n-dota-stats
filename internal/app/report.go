@@ -217,6 +217,7 @@ func (r *Report) footer() []string {
 func (r *Report) Text() string {
 	lines := r.header()
 	lines = append(lines, r.body()...)
+	lines = append(lines, heatBlock(r.Snap.HeatLane, "ГДЕ ТЫ БЫЛ ДО 10:00")...)
 	lines = append(lines, r.top3()...)
 	lines = append(lines, r.footer()...)
 	return strings.Join(lines, "\n")
@@ -369,4 +370,41 @@ func usersCard(users []store.User, idx int, db *store.DB) (string, telegram.Keyb
 	}
 	kb = append(kb, []telegram.Button{{Text: "игры", Data: "u:g:" + chat + ":" + strconv.Itoa(idx)}})
 	return strings.Join(lines, "\n"), kb
+}
+
+// heatBlock рисует тепловую карту символами заполнения.
+//
+// Ориентация как на миникарте: слева запад, сверху север, то есть база Radiant
+// в левом нижнем углу. Строки печатаются сверху вниз, а хранятся снизу вверх,
+// поэтому идём с конца.
+//
+// Символы выбраны одной ширины — иначе в моноширинном шрифте телеграма строки
+// разъезжаются, и карта перестаёт быть картой.
+func heatBlock(h analysis.Heat, title string) []string {
+	if h.Points == 0 {
+		return nil
+	}
+	shade := []rune{'·', '░', '▒', '▓', '█'}
+	dead := map[int]bool{}
+	for _, i := range h.Deaths {
+		dead[int(i)] = true
+	}
+	out := []string{"", "<b>" + title + "</b>",
+		"<i>✖ смерти · слева внизу база Radiant</i>"}
+	var b strings.Builder
+	b.WriteString("<pre>")
+	for row := analysis.HeatSize - 1; row >= 0; row-- {
+		for col := 0; col < analysis.HeatSize; col++ {
+			i := row*analysis.HeatSize + col
+			if dead[i] {
+				b.WriteRune('✖')
+				continue
+			}
+			b.WriteRune(shade[h.Cells[i]])
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("</pre>")
+	out = append(out, b.String())
+	return out
 }
