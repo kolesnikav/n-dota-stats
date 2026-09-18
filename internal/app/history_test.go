@@ -79,3 +79,38 @@ func TestHelpHidesAdminCommands(t *testing.T) {
 		}
 	}
 }
+
+// Кнопки карты должны нести номер матча и номер игрока: админ смотрит и чужие
+// игры, и без аккаунта карта строилась бы по его собственной сводке.
+func TestMapButtons(t *testing.T) {
+	btns := mapButtons(9003682980, 109779233)
+	if len(btns) != 2 {
+		t.Fatalf("кнопок %d, ждали 2", len(btns))
+	}
+	if btns[0].Data != "k:9003682980:lane:109779233" {
+		t.Errorf("кнопка линии ведёт на %q", btns[0].Data)
+	}
+	if btns[1].Data != "k:9003682980:all:109779233" {
+		t.Errorf("кнопка матча ведёт на %q", btns[1].Data)
+	}
+	for _, b := range btns {
+		if len(b.Data) > 64 {
+			t.Errorf("данные кнопки длиной %d: %q", len(b.Data), b.Data)
+		}
+	}
+}
+
+// В админском виджете карта идёт отдельным рядом, «назад» — следующим.
+func TestHistoryNavRows(t *testing.T) {
+	data := func(p int) string { return fmt.Sprintf("u:g:1:0:%d", p) }
+	kb := historyNav(0, 5, data, mapButtons(7, 42), []telegram.Button{{Text: "назад", Data: "u:p:0"}})
+	if len(kb) != 3 {
+		t.Fatalf("рядов %d, ждали 3", len(kb))
+	}
+	if kb[1][0].Text != "карта линии" {
+		t.Errorf("второй ряд начинается с %q", kb[1][0].Text)
+	}
+	if kb[2][0].Text != "назад" {
+		t.Errorf("третий ряд: %q", kb[2][0].Text)
+	}
+}

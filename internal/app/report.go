@@ -226,7 +226,7 @@ func (r *Report) Text() string {
 func (r *Report) Keyboard() telegram.Keyboard {
 	id := strconv.FormatInt(r.Snap.MatchID, 10)
 	return telegram.Keyboard{
-		mapButtons(r.Snap.MatchID),
+		mapButtons(r.Snap.MatchID, r.Snap.AccountID),
 		{{Text: "сменить роль", Data: "r:" + id}},
 	}
 }

@@ -282,12 +282,13 @@ func (a *App) showUserHistory(chatID, msgID, target int64, card, page int) {
 	back := []telegram.Button{{Text: "назад", Data: fmt.Sprintf("u:p:%d", card)}}
 	title := fmt.Sprintf("<b>Матчи %s</b>\n\n", esc(u.Nickname))
 
-	text, _, index, total, ok := a.historyPage(u.AccountID, page)
+	text, matchID, index, total, ok := a.historyPage(u.AccountID, page)
 	if !ok {
 		_ = a.Bot.Edit(chatID, msgID, title+"Пока ничего не разобрано.",
 			telegram.Keyboard{back})
 		return
 	}
 	data := func(p int) string { return fmt.Sprintf("u:g:%d:%d:%d", target, card, p) }
-	_ = a.Bot.Edit(chatID, msgID, title+text, historyNav(index, total, data, back))
+	_ = a.Bot.Edit(chatID, msgID, title+text,
+		historyNav(index, total, data, mapButtons(matchID, u.AccountID), back))
 }

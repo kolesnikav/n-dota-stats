@@ -27,7 +27,7 @@ func (a *App) cmdHistory(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Матчей пока нет. /backfill — загрузить историю.", nil)
 		return
 	}
-	_, _ = a.Bot.Send(chatID, text, historyNav(index, total, ownHistoryData, mapButtons(matchID)))
+	_, _ = a.Bot.Send(chatID, text, historyNav(index, total, ownHistoryData, mapButtons(matchID, u.AccountID)))
 }
 
 // historyCallback перелистывает историю, переписывая то же сообщение.
@@ -45,7 +45,7 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 		return
 	}
 	if err := a.Bot.Edit(chatID, msgID, text,
-		historyNav(index, total, ownHistoryData, mapButtons(matchID))); err != nil {
+		historyNav(index, total, ownHistoryData, mapButtons(matchID, u.AccountID))); err != nil {
 		a.Log("правка истории у %d: %v", chatID, err)
 	}
 }

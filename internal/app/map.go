@@ -17,12 +17,16 @@ import (
 // сводка длиннее, так что уместить одно в другое нельзя. И присылать по две
 // картинки на каждый матч, когда смотрят далеко не каждый, — лишний шум.
 
-// mapKeyboard — кнопки карт под сводкой.
-func mapButtons(matchID int64) []telegram.Button {
-	id := strconv.FormatInt(matchID, 10)
+// mapButtons — кнопки карт под сводкой.
+//
+// Номер аккаунта в кнопке нужен потому, что админ смотрит и чужие игры: без
+// него карта строилась бы по его собственной сводке этого матча, а её может и
+// не быть вовсе.
+func mapButtons(matchID, accountID int64) []telegram.Button {
+	id := strconv.FormatInt(matchID, 10) + ":%s:" + strconv.FormatInt(accountID, 10)
 	return []telegram.Button{
-		{Text: "карта линии", Data: "k:" + id + ":lane"},
-		{Text: "карта матча", Data: "k:" + id + ":all"},
+		{Text: "карта линии", Data: "k:" + fmt.Sprintf(id, "lane")},
+		{Text: "карта матча", Data: "k:" + fmt.Sprintf(id, "all")},
 	}
 }
 
@@ -39,7 +43,18 @@ func (a *App) mapCallback(chatID int64, parts []string) {
 	if !ok || u.AccountID == 0 {
 		return
 	}
-	blob, ok := a.DB.Snapshot(matchID, u.AccountID)
+	account := u.AccountID
+	if len(parts) > 3 {
+		if id, err := strconv.ParseInt(parts[3], 10, 64); err == nil && id != 0 {
+			// Чужую карту показываем только админу: в сводке чужого матча
+			// видно, где человек ходил, и это не общее достояние.
+			if id != u.AccountID && !a.isAdmin(chatID) {
+				return
+			}
+			account = id
+		}
+	}
+	blob, ok := a.DB.Snapshot(matchID, account)
 	if !ok {
 		_, _ = a.Bot.Send(chatID, "По этому матчу нет сохранённой сводки.", nil)
 		return
