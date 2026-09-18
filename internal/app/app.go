@@ -142,8 +142,12 @@ func (a *App) Report(chatID, accountID, matchID int64) (*Report, error) {
 	return rep, nil
 }
 
-// SendReport отправляет сводку и, если разметки ещё нет, спрашивает про MVP.
-func (a *App) SendReport(chatID, accountID, matchID int64, askMVP bool) error {
+// SendReport отправляет сводку.
+//
+// Отдельным сообщением про разметку больше не спрашиваем: под сводкой есть
+// кнопка «указать лучших», и она открывает тот же опрос прямо в этом
+// сообщении. Раньше на каждый матч приходило два поста вместо одного.
+func (a *App) SendReport(chatID, accountID, matchID int64) error {
 	rep, err := a.Report(chatID, accountID, matchID)
 	if err != nil {
 		return err
@@ -153,9 +157,6 @@ func (a *App) SendReport(chatID, accountID, matchID int64, askMVP bool) error {
 		return err
 	}
 	_ = a.DB.SetMessageID(matchID, accountID, msgID)
-	if askMVP && len(a.DB.Actual(matchID, accountID)) == 0 {
-		_, _ = a.Bot.Send(chatID, stepQuestion[1], mvpKeyboard(matchID, rep.Ranked, 1, map[int]bool{}))
-	}
 	return nil
 }
 

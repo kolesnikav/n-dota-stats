@@ -249,7 +249,7 @@ func roleKeyboard(matchID int64) telegram.Keyboard {
 }
 
 // mvpKeyboard — кнопки разметки реального топ-3.
-func mvpKeyboard(matchID int64, ranked []mvp.Scored, step int, chosen map[int]bool) telegram.Keyboard {
+func mvpKeyboard(matchID int64, ranked []mvp.Scored, step int, chosen map[int]bool, ctx viewCtx) telegram.Keyboard {
 	id := strconv.FormatInt(matchID, 10)
 	kb := telegram.Keyboard{}
 	var row []telegram.Button
@@ -263,7 +263,7 @@ func mvpKeyboard(matchID int64, ranked []mvp.Scored, step int, chosen map[int]bo
 		}
 		row = append(row, telegram.Button{
 			Text: label,
-			Data: fmt.Sprintf("m:%s:%d:%d", id, s.Player.Slot, step),
+			Data: fmt.Sprintf("m:%s:%d:%d:%s", id, s.Player.Slot, step, ctx.encode()),
 		})
 		if len(row) == 2 {
 			kb = append(kb, row)
@@ -273,7 +273,7 @@ func mvpKeyboard(matchID int64, ranked []mvp.Scored, step int, chosen map[int]bo
 	if len(row) > 0 {
 		kb = append(kb, row)
 	}
-	kb = append(kb, []telegram.Button{{Text: "пропустить", Data: fmt.Sprintf("m:%s:x:%d", id, step)}})
+	kb = append(kb, []telegram.Button{{Text: "пропустить", Data: fmt.Sprintf("m:%s:x:%d:%s", id, step, ctx.encode())}})
 	return kb
 }
 

@@ -129,7 +129,7 @@ func (a *App) announce(matchID int64) {
 		if !ok || u.Status == store.StatusBlocked || !u.Watch {
 			continue
 		}
-		if err := a.SendReport(u.ChatID, u.AccountID, matchID, true); err != nil {
+		if err := a.SendReport(u.ChatID, u.AccountID, matchID); err != nil {
 			a.Log("сводка %d для %d: %v", matchID, u.ChatID, err)
 		}
 	}

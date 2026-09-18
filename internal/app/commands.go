@@ -195,7 +195,7 @@ func (a *App) finishRegistration(chatID int64, text, name string) {
 		a.notifyAdmins(chatID, accountID, name)
 	}
 	go func() {
-		if err := a.SendReport(chatID, accountID, ids[0], true); err != nil {
+		if err := a.SendReport(chatID, accountID, ids[0]); err != nil {
 			a.Log("первая сводка: %v", err)
 		}
 	}()
@@ -286,7 +286,7 @@ func (a *App) cmdLast(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Не вижу матчей. История матчей открыта?", nil)
 		return
 	}
-	if err := a.SendReport(chatID, u.AccountID, ids[0], true); err != nil {
+	if err := a.SendReport(chatID, u.AccountID, ids[0]); err != nil {
 		_, _ = a.Bot.Send(chatID, "Не смог разобрать матч: "+esc(err.Error()), nil)
 	}
 }
@@ -302,7 +302,7 @@ func (a *App) cmdMatch(chatID int64, arg string) {
 		_, _ = a.Bot.Send(chatID, "Нужен номер матча: <code>/match 8999344582</code>", nil)
 		return
 	}
-	if err := a.SendReport(chatID, u.AccountID, id, true); err != nil {
+	if err := a.SendReport(chatID, u.AccountID, id); err != nil {
 		_, _ = a.Bot.Send(chatID, "Не смог разобрать матч: "+esc(err.Error()), nil)
 	}
 }

@@ -121,21 +121,27 @@ func (a *App) reportFromSnapshot(accountID, matchID int64) (*Report, bool) {
 }
 
 // summaryKeyboard — кнопки под текстовой сводкой.
-func summaryKeyboard(matchID, accountID int64, ctx viewCtx, extra ...[]telegram.Button) telegram.Keyboard {
+//
+// Разметку предлагаем только пока её нет: повторно указывать лучших незачем,
+// а кнопка, которая ничего не меняет, только занимает место.
+func (a *App) summaryKeyboard(matchID, accountID int64, ctx viewCtx, extra ...[]telegram.Button) telegram.Keyboard {
 	kb := telegram.Keyboard{mapRow(matchID, accountID, ctx)}
+	if len(a.DB.Actual(matchID, accountID)) == 0 {
+		kb = append(kb, markRow(matchID, accountID, ctx))
+	}
 	return append(kb, extra...)
 }
 
 // SendSummary отправляет текстовую сводку.
 func (a *App) SendSummary(chatID int64, text string, rep *Report, ctx viewCtx, extra ...[]telegram.Button) (int64, error) {
 	return a.Bot.Send(chatID, text,
-		summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, ctx, extra...))
+		a.summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, ctx, extra...))
 }
 
 // EditSummary правит текстовую сводку на месте.
 func (a *App) EditSummary(chatID, msgID int64, text string, rep *Report, ctx viewCtx, extra ...[]telegram.Button) error {
 	return a.Bot.Edit(chatID, msgID, text,
-		summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, ctx, extra...))
+		a.summaryKeyboard(rep.Snap.MatchID, rep.Snap.AccountID, ctx, extra...))
 }
 
 // summaryView собирает сводку и кнопки для места, откуда её открыли.

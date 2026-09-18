@@ -39,6 +39,8 @@ func (a *App) onCallback(u telegram.Update) {
 		a.mapCallback(chatID, msgID, parts, true)
 	case "b": // возврат от карты к сводке
 		a.backCallback(chatID, msgID, parts)
+	case "mm": // начать разметку настоящего топ-3
+		a.startMarkCallback(chatID, msgID, parts)
 	case "h": // листание истории
 		a.historyCallback(chatID, msgID, parts)
 	}
@@ -89,6 +91,54 @@ func (a *App) roleCallback(chatID, msgID int64, parts []string) {
 	}
 }
 
+// startMarkCallback превращает сводку в первый вопрос разметки.
+//
+// Вопрос занимает то же сообщение: это правка текста на текст, которую
+// телеграм разрешает, так что удалять и слать заново не нужно.
+func (a *App) startMarkCallback(chatID, msgID int64, parts []string) {
+	if len(parts) < 3 {
+		return
+	}
+	matchID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return
+	}
+	account, ok := a.viewAccount(chatID, parts[2])
+	if !ok || account != a.accountOf(chatID) {
+		// Размечает только сам игрок: это его ответ про экран Dota, и на нём
+		// учится его формула.
+		return
+	}
+	ctx := viewCtx{Kind: "s"}
+	if len(parts) > 3 {
+		ctx = decodeCtx(parts[3])
+	}
+	m, err := a.LoadMatch(matchID, account)
+	if err != nil {
+		return
+	}
+	rep, err := a.Build(m, account)
+	if err != nil {
+		return
+	}
+	delete(a.marking, markKey(matchID, account))
+	_ = a.Bot.Edit(chatID, msgID, stepQuestion[1],
+		mvpKeyboard(matchID, rep.Ranked, 1, map[int]bool{}, ctx))
+}
+
+// accountOf — привязанный аккаунт чата.
+func (a *App) accountOf(chatID int64) int64 {
+	u, ok := a.DB.User(chatID)
+	if !ok {
+		return 0
+	}
+	return u.AccountID
+}
+
+func markKey(matchID, accountID int64) string {
+	return fmt.Sprintf("%d:%d", matchID, accountID)
+}
+
 func (a *App) markCallback(chatID, msgID int64, parts []string) {
 	if len(parts) < 4 {
 		return
@@ -105,13 +155,17 @@ func (a *App) markCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	key := fmt.Sprintf("%d:%d", matchID, u.AccountID)
+	ctx := viewCtx{Kind: "s"}
+	if len(parts) > 4 {
+		ctx = decodeCtx(parts[4])
+	}
+	key := markKey(matchID, u.AccountID)
 	chosen := a.marking[key]
 
 	if parts[2] == "x" { // пропустить
 		delete(a.marking, key)
 		_ = a.DB.SetActual(matchID, u.AccountID, chosen)
-		_ = a.Bot.Edit(chatID, msgID, a.markSummary(matchID, u.AccountID, chosen), nil)
+		a.finishMark(chatID, msgID, matchID, u.AccountID, chosen, ctx)
 		return
 	}
 	slot, err := strconv.Atoi(parts[2])
@@ -129,13 +183,19 @@ func (a *App) markCallback(chatID, msgID int64, parts []string) {
 				taken[s] = true
 			}
 			_ = a.Bot.Edit(chatID, msgID, stepQuestion[step+1],
-				mvpKeyboard(matchID, rep.Ranked, step+1, taken))
+				mvpKeyboard(matchID, rep.Ranked, step+1, taken, ctx))
 			return
 		}
 	}
 	delete(a.marking, key)
 	_ = a.DB.SetActual(matchID, u.AccountID, chosen)
-	_ = a.Bot.Edit(chatID, msgID, a.markSummary(matchID, u.AccountID, chosen), nil)
+	a.finishMark(chatID, msgID, matchID, u.AccountID, chosen, ctx)
+}
+
+// finishMark показывает, что получилось, и оставляет дорогу обратно к сводке.
+func (a *App) finishMark(chatID, msgID, matchID, accountID int64, chosen []int, ctx viewCtx) {
+	kb := telegram.Keyboard{backRow(matchID, accountID, ctx)}
+	_ = a.Bot.Edit(chatID, msgID, a.markSummary(matchID, accountID, chosen), kb)
 }
 
 func (a *App) markSummary(matchID, accountID int64, chosen []int) string {

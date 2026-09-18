@@ -88,6 +88,14 @@ func mapSwitch(matchID, accountID int64, current string, ctx viewCtx) []telegram
 	}
 }
 
+// markRow — кнопка разметки настоящего топ-3 с экрана Dota.
+func markRow(matchID, accountID int64, ctx viewCtx) []telegram.Button {
+	return []telegram.Button{{
+		Text: "указать лучших",
+		Data: fmt.Sprintf("mm:%d:%d:%s", matchID, accountID, ctx.encode()),
+	}}
+}
+
 // backRow — возврат от карты к сводке.
 func backRow(matchID, accountID int64, ctx viewCtx) []telegram.Button {
 	return []telegram.Button{{
