@@ -33,6 +33,8 @@ func (a *App) onCallback(u telegram.Update) {
 		a.markCallback(chatID, msgID, parts)
 	case "u": // админка
 		a.adminCallback(chatID, msgID, parts)
+	case "k": // тепловая карта
+		a.mapCallback(chatID, parts)
 	case "h": // листание истории
 		a.historyCallback(chatID, msgID, parts)
 	}
@@ -280,7 +282,7 @@ func (a *App) showUserHistory(chatID, msgID, target int64, card, page int) {
 	back := []telegram.Button{{Text: "назад", Data: fmt.Sprintf("u:p:%d", card)}}
 	title := fmt.Sprintf("<b>Матчи %s</b>\n\n", esc(u.Nickname))
 
-	text, index, total, ok := a.historyPage(u.AccountID, page)
+	text, _, index, total, ok := a.historyPage(u.AccountID, page)
 	if !ok {
 		_ = a.Bot.Edit(chatID, msgID, title+"Пока ничего не разобрано.",
 			telegram.Keyboard{back})

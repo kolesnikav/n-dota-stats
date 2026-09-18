@@ -15,6 +15,60 @@ import "github.com/kolesnikav/n-dota-stats/internal/dota"
 // рубеж, что у добиваний к 10:00 и эффективности линии.
 const laneEnd = 600
 
+// SnapPath — путь игрока: координаты через равные промежутки, умноженные на
+// четыре. Время точки — её номер, умноженный на шаг.
+type SnapPath struct {
+	Step int     `json:"step"`
+	X    []int16 `json:"x"`
+	Y    []int16 `json:"y"`
+}
+
+// SnapPoint — место и время одного события.
+type SnapPoint struct {
+	T int   `json:"t"`
+	X int16 `json:"x"`
+	Y int16 `json:"y"`
+}
+
+// Points разворачивает путь обратно в точки.
+func (p SnapPath) Points() []dota.Point {
+	if p.Step <= 0 {
+		return nil
+	}
+	out := make([]dota.Point, 0, len(p.X))
+	for i := range p.X {
+		if i >= len(p.Y) || (p.X[i] == 0 && p.Y[i] == 0) {
+			continue
+		}
+		out = append(out, dota.Point{T: i * p.Step, X: float64(p.X[i]) / 4, Y: float64(p.Y[i]) / 4})
+	}
+	return out
+}
+
+// packPath сворачивает точки обратно в компактный вид.
+func packPath(pts []dota.Point) SnapPath {
+	if len(pts) == 0 {
+		return SnapPath{}
+	}
+	step := pathStep
+	out := SnapPath{Step: step}
+	for _, pt := range pts {
+		i := pt.T / step
+		for len(out.X) <= i {
+			out.X = append(out.X, 0)
+			out.Y = append(out.Y, 0)
+		}
+		out.X[i] = int16(pt.X*4 + 0.5)
+		out.Y[i] = int16(pt.Y*4 + 0.5)
+	}
+	return out
+}
+
+// pathStep — шаг записи пути. Совпадает с тем, с каким его пишет разбор
+// реплея; держать его здесь отдельно нужно, чтобы analysis не зависел от
+// пакета разбора.
+const pathStep = 5
+
 // SnapLine — один показатель в снимке.
 type SnapLine struct {
 	Key   string   `json:"k"`
@@ -58,11 +112,12 @@ type Snapshot struct {
 
 	Lines []SnapLine `json:"lines"`
 
-	// Heat — где игрок был на линии и где за весь матч. Лежит в снимке, а не
-	// считается при показе, потому что путь героя есть только в разборе
-	// реплея, и держать его ради этого негде.
-	HeatLane  Heat `json:"heat_lane,omitempty"`
-	HeatMatch Heat `json:"heat_match,omitempty"`
+	// Path — путь игрока, Deaths — где он умирал. Лежат в снимке, потому что
+	// есть только в разборе реплея, а нужны каждый раз, когда рисуется карта.
+	// Хранятся точками, а не готовой сеткой: из точек можно нарисовать карту
+	// любой подробности и за любой отрезок, из сетки — только ту же сетку.
+	Path     SnapPath    `json:"path,omitempty"`
+	DeathsAt []SnapPoint `json:"deaths_at,omitempty"`
 
 	Top     []SnapTop `json:"top,omitempty"`
 	Place   int       `json:"place,omitempty"`
@@ -81,9 +136,9 @@ func Snap(m *dota.Match, p *dota.Player) Snapshot {
 		RoleManual: p.RoleSource == dota.SourceManual,
 		Partial:    m.Detail < dota.DetailMeta,
 	}
-	if len(p.Path) > 0 {
-		snap.HeatLane = HeatMap(p, 0, laneEnd)
-		snap.HeatMatch = HeatMap(p, 0, 0)
+	snap.Path = packPath(p.Path)
+	for _, d := range p.DeathsAt {
+		snap.DeathsAt = append(snap.DeathsAt, SnapPoint{T: d.T, X: int16(d.X*4 + 0.5), Y: int16(d.Y*4 + 0.5)})
 	}
 	for _, metric := range MetricsFor(p.Role, p.HeroID, false) {
 		if metric.Needs > m.Detail {

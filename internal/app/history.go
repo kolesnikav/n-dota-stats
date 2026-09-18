@@ -22,12 +22,12 @@ func (a *App) cmdHistory(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Сначала привяжи аккаунт: /start", nil)
 		return
 	}
-	text, index, total, ok := a.historyPage(u.AccountID, 0)
+	text, matchID, index, total, ok := a.historyPage(u.AccountID, 0)
 	if !ok {
 		_, _ = a.Bot.Send(chatID, "Матчей пока нет. /backfill — загрузить историю.", nil)
 		return
 	}
-	_, _ = a.Bot.Send(chatID, text, historyNav(index, total, ownHistoryData))
+	_, _ = a.Bot.Send(chatID, text, historyNav(index, total, ownHistoryData, mapButtons(matchID)))
 }
 
 // historyCallback перелистывает историю, переписывая то же сообщение.
@@ -40,20 +40,21 @@ func (a *App) historyCallback(chatID, msgID int64, parts []string) {
 	if err != nil {
 		return
 	}
-	text, index, total, ok := a.historyPage(u.AccountID, index)
+	text, matchID, index, total, ok := a.historyPage(u.AccountID, index)
 	if !ok {
 		return
 	}
-	if err := a.Bot.Edit(chatID, msgID, text, historyNav(index, total, ownHistoryData)); err != nil {
+	if err := a.Bot.Edit(chatID, msgID, text,
+		historyNav(index, total, ownHistoryData, mapButtons(matchID))); err != nil {
 		a.Log("правка истории у %d: %v", chatID, err)
 	}
 }
 
 // historyPage готовит страницу: сводку матча под номером index и кнопки.
-func (a *App) historyPage(accountID int64, index int) (text string, page, total int, ok bool) {
+func (a *App) historyPage(accountID int64, index int) (text string, matchID int64, page, total int, ok bool) {
 	matchID, total, err := a.DB.UserMatchAt(accountID, index)
 	if err != nil || total == 0 || matchID == 0 {
-		return "", 0, 0, false
+		return "", 0, 0, 0, false
 	}
 	if index < 0 {
 		index = 0
@@ -70,16 +71,16 @@ func (a *App) historyPage(accountID int64, index int) (text string, page, total 
 		var snap analysis.Snapshot
 		if json.Unmarshal(blob, &snap) == nil && len(snap.Lines) > 0 {
 			rep := &Report{Snap: snap, Full: snap.Render(a.DB, false)}
-			return head + rep.Text(), index, total, true
+			return head + rep.Text(), matchID, index, total, true
 		}
 	}
 	// Снимка нет — матч разобран до того, как их начали хранить. Считаем как
 	// раньше, из матча.
 	rep, err := a.View(accountID, matchID)
 	if err != nil {
-		return fmt.Sprintf("Матч %d не разобрать: %v", matchID, err), index, total, true
+		return fmt.Sprintf("Матч %d не разобрать: %v", matchID, err), matchID, index, total, true
 	}
-	return head + rep.Text(), index, total, true
+	return head + rep.Text(), matchID, index, total, true
 }
 
 // ownHistoryData — адрес страницы своей истории.

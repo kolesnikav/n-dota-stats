@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -151,4 +153,58 @@ func (b *Bot) Answer(callbackID, text string) error {
 		params["text"] = text
 	}
 	return b.call("answerCallbackQuery", params, nil)
+}
+
+// SendPhoto отправляет картинку. Подпись идёт отдельным полем и ограничена
+// телеграмом тысячей символов, поэтому длинный текст в неё не кладём.
+func (b *Bot) SendPhoto(chatID int64, caption, filename string, data []byte, kb Keyboard) (int64, error) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	_ = w.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if caption != "" {
+		_ = w.WriteField("caption", caption)
+		_ = w.WriteField("parse_mode", "HTML")
+	}
+	if len(kb) > 0 {
+		markup, err := json.Marshal(map[string]any{"inline_keyboard": kb})
+		if err != nil {
+			return 0, err
+		}
+		_ = w.WriteField("reply_markup", string(markup))
+	}
+	part, err := w.CreateFormFile("photo", filename)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return 0, err
+	}
+	if err := w.Close(); err != nil {
+		return 0, err
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", b.Token)
+	resp, err := b.HTTP.Post(url, w.FormDataContentType(), &body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+	var envelope struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return 0, fmt.Errorf("sendPhoto: %s", truncate(string(raw), 200))
+	}
+	if !envelope.OK {
+		return 0, fmt.Errorf("sendPhoto: %s", envelope.Description)
+	}
+	return envelope.Result.MessageID, nil
 }
