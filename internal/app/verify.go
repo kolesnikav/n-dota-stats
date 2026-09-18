@@ -241,7 +241,7 @@ func VerifyLanes(ref *dota.Match, res *replay.Result) (agree int, total int, wro
 		if !ok || p.Lane == 0 {
 			continue
 		}
-		lane, role := ps.Lane(p.IsRadiant)
+		lane, role := ps.LaneID, ps.LaneRoleID
 		total++
 		if lane == p.Lane && role == p.LaneRole {
 			agree++

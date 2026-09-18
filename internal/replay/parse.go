@@ -85,6 +85,12 @@ type PlayerStats struct {
 	// Считаются по боевому логу: в сущностях их нет.
 	NeutralKills int
 	BuybackCount int
+	// LaneID и LaneRoleID — линия и позиция на ней, посчитанные по позициям
+	// во время лейнинга. Хранятся готовыми, а не голосами: голоса не пережили
+	// бы запись в базу, а без линии разваливается определение ролей.
+	LaneID     int
+	LaneRoleID int
+
 	// laneVotes — сколько раз игрок был замечен на каждой линии во время
 	// лейнинга. Индексы: 1 нижняя, 2 центр, 3 верхняя.
 	laneVotes [4]int
@@ -569,9 +575,12 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			ps.Deaths[i].Time = toSec(ps.Deaths[i].Time)
 		}
 	}
-	for _, ps := range res.Players {
+	for slot, ps := range res.Players {
 		sort.Slice(ps.Deaths, func(i, j int) bool { return ps.Deaths[i].Time < ps.Deaths[j].Time })
 		sort.Slice(ps.Wards, func(i, j int) bool { return ps.Wards[i].Placed < ps.Wards[j].Placed })
+		// Линию считаем здесь, пока голоса ещё в памяти: наружу и в базу
+		// уходит уже готовый ответ.
+		ps.LaneID, ps.LaneRoleID = ps.lane(slot < 128)
 	}
 	return res, nil
 }
@@ -766,8 +775,8 @@ func (r *Result) Apply(m *dota.Match) int {
 			if len(ps.HeroHits) > 0 {
 				p.HeroHits = ps.HeroHits
 			}
-			if lane, role := ps.Lane(p.IsRadiant); lane > 0 {
-				p.Lane, p.LaneRole = lane, role
+			if ps.LaneID > 0 {
+				p.Lane, p.LaneRole = ps.LaneID, ps.LaneRoleID
 			}
 			p.TeamfightParticipation = t.TeamfightParticipation
 			// Счётчики вардов из сущности точнее нашего слежения: оно нужно
@@ -874,10 +883,10 @@ func laneAt(x, y float64) int {
 	}
 }
 
-// Lane возвращает линию игрока по голосованию позиций и её же в виде роли
+// lane возвращает линию игрока по голосованию позиций и её же в виде роли
 // линии: 1 лёгкая, 2 центр, 3 сложная. Роль зависит от стороны — нижняя линия
 // лёгкая для Radiant и сложная для Dire.
-func (p *PlayerStats) Lane(radiant bool) (lane, role int) {
+func (p *PlayerStats) lane(radiant bool) (lane, role int) {
 	best, votes := 0, 0
 	for l := 1; l <= 3; l++ {
 		if p.laneVotes[l] > votes {
