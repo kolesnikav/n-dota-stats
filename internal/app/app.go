@@ -79,6 +79,9 @@ func (a *App) LoadMatch(matchID int64, forAccount int64) (*dota.Match, error) {
 			a.Log("сохранение матча %d: %v", matchID, err)
 		}
 	}
+	// Лучшие по версии Dota лежат отдельной колонкой: разбор метаданных мог
+	// быть сделан старой версией, где этого поля ещё не читали.
+	m.MVP = a.DB.MVP(matchID)
 	if blob, ok := a.DB.LoadMeta(matchID); ok {
 		var md meta.Metadata
 		if json.Unmarshal(blob, &md) == nil {

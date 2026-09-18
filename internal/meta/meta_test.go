@@ -2,6 +2,7 @@ package meta_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
@@ -135,5 +136,68 @@ func TestItemTimings(t *testing.T) {
 	}
 	if boots < 280 || boots > 340 {
 		t.Errorf("ботинки на %d секунде, ждали около 303", boots)
+	}
+}
+
+// Лучший игрок матча и два кандидата лежат в метаданных — тот самый список,
+// который Dota показывает после игры.
+//
+// Матч 8999344582: на экране была Winter Wyvern, слот 130. Вручную этот матч
+// размечен неточно (игрок сам сомневался в третьем), поэтому проверяем по
+// первому месту и по составу, а не по памяти.
+func TestMVPFromMetadata(t *testing.T) {
+	md := load(t)
+	if len(md.MVP) != 3 {
+		t.Fatalf("записей о лучших %d, ждали 3", len(md.MVP))
+	}
+	if got := md.MVP[0].Slot; got != 130 {
+		t.Errorf("лучший в слоте %d, ждали 130 (Winter Wyvern)", got)
+	}
+	// Первое место всегда объяснено наградами — по ним Dota и выбирает.
+	if len(md.MVP[0].Accolades) == 0 {
+		t.Error("у лучшего игрока нет ни одной награды")
+	}
+	var hasHeroSpecific bool
+	for _, a := range md.MVP[0].Accolades {
+		if a == "WinterWyvern_ThreeHeroCurses" {
+			hasHeroSpecific = true
+		}
+		if strings.HasPrefix(a, "kKillEater") || strings.HasPrefix(a, "CMvpData") {
+			t.Errorf("имя награды не очищено от приставки: %q", a)
+		}
+	}
+	if !hasHeroSpecific {
+		t.Errorf("не нашлось геройской награды Winter Wyvern: %v", md.MVP[0].Accolades)
+	}
+	// Слоты не повторяются: это три разных игрока.
+	seen := map[int]bool{}
+	for _, m := range md.MVP {
+		if seen[m.Slot] {
+			t.Errorf("слот %d встретился дважды", m.Slot)
+		}
+		seen[m.Slot] = true
+	}
+}
+
+// Оценки Valve тоже лежат в метаданных. Они разной природы, поэтому проверяем
+// только то, что они прочитались и попали в разумные пределы.
+func TestValveScores(t *testing.T) {
+	md := load(t)
+	var withFight int
+	for _, p := range md.Players {
+		if p.FightScore > 0 {
+			withFight++
+		}
+		if p.FightScore < 0 || p.FightScore > 1.01 {
+			t.Errorf("слот %d: оценка боя %v вне 0…1", p.Slot, p.FightScore)
+		}
+		if p.FarmScore < 0 || p.SupportScore < 0 || p.PushScore < 0 {
+			t.Errorf("слот %d: отрицательная оценка", p.Slot)
+		}
+	}
+	// Ноль — законное значение: в этом матче один игрок так и не поучаствовал
+	// ни в одной драке. Но если нулей много, значит поле просто не читается.
+	if withFight < 8 {
+		t.Errorf("оценка боя ненулевая только у %d игроков из 10", withFight)
 	}
 }

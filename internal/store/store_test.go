@@ -336,3 +336,67 @@ func TestSecondPlayerLinksToKnownMatch(t *testing.T) {
 		t.Errorf("у второго игрока %d матчей, ждали 1", n)
 	}
 }
+
+// Ответ Dota хранится у матча и используется для обучения вместо ручной
+// разметки: он точнее — размечают по памяти, а метаданные приходят от игры.
+func TestMVPPreferredOverManualMarking(t *testing.T) {
+	db := open(t)
+	const acc = int64(11)
+	for i, id := range []int64{801, 802} {
+		m := &dota.Match{ID: id, StartTime: int64(i), Duration: 2000}
+		for j := 0; j < 10; j++ {
+			slot := j
+			if j >= 5 {
+				slot = 128 + j - 5
+			}
+			m.Players = append(m.Players, &dota.Player{
+				Slot: slot, HeroID: j + 1, IsRadiant: j < 5,
+				Benchmarks: map[string]float64{"gold_per_min": 0.5},
+			})
+		}
+		if err := db.SaveMatch(m, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.LinkMatchUser(store.MatchUser{
+			MatchID: id, AccountID: acc, ChatID: 1, Role: dota.RoleMid,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// У первого матча есть и ответ игры, и разметка по памяти — они расходятся.
+	if err := db.SaveMVP(801, []int{130, 2, 129}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetActual(801, acc, []int{128, 129, 130}); err != nil {
+		t.Fatal(err)
+	}
+	// У второго — только разметка.
+	if err := db.SetActual(802, acc, []int{5, 6, 7}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := db.MVP(801); len(got) != 3 || got[0] != 130 {
+		t.Fatalf("ответ игры прочитан как %v", got)
+	}
+	if got := db.MVP(802); got != nil {
+		t.Errorf("у матча без ответа игры вернулось %v", got)
+	}
+
+	labelled, err := db.Labelled(acc, []string{"gold_per_min"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(labelled) != 2 {
+		t.Fatalf("матчей для обучения %d, ждали 2", len(labelled))
+	}
+	byID := map[int64][]int{}
+	for _, lm := range labelled {
+		byID[lm.MatchID] = lm.Actual
+	}
+	if got := byID[801]; len(got) == 0 || got[0] != 130 {
+		t.Errorf("для матча с ответом игры взята разметка: %v", got)
+	}
+	if got := byID[802]; len(got) == 0 || got[0] != 5 {
+		t.Errorf("для матча без ответа игры разметка потеряна: %v", got)
+	}
+}

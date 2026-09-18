@@ -2,29 +2,24 @@
 //
 // Valve выкладывает его рядом с реплеем по тому же адресу, но с расширением
 // .meta.bz2 (внутри, несмотря на имя, zstd). Размер — десятки килобайт против
-// десятков мегабайт у самого реплея, а внутри уже лежит многое из того, ради
-// чего обычно парсят реплей: порядок прокачки, снимки инвентаря каждые 30
-// секунд, время получения уровней, секунды контроля.
+// десятков мегабайт у самого реплея, а внутри лежит многое из того, ради чего
+// обычно парсят реплей: порядок прокачки, снимки инвентаря, время получения
+// уровней, секунды контроля — и, главное, **лучший игрок матча с двумя
+// кандидатами**, тот самый список, который Dota показывает после игры.
 //
-// Разметка полей восстановлена по реальному файлу матча 8999344582 и
-// проверена тестом: секунды контроля Мираны совпали с тем, что показывает
-// OpenDota (70.7336), а порядок прокачки — с её ability_upgrades_arr.
-//
-// Формат:
-//
-//	CDOTAMatchMetadataFile { 1 version, 2 match_id, 3 metadata, 5 подпись }
-//	CDOTAMatchMetadata     { 1 repeated Team }
-//	Team                   { 1 team_id, 2 repeated Player }
-//	Player                 { 2 repeated ability_id, 3 player_slot,
-//	                         22 repeated level_up_time, 24 repeated Snapshot,
-//	                         45 stuns (float) }
-//	Snapshot               { 1 repeated item_id, 2 time }
+// Разметку полей больше не восстанавливаем вручную: описания сообщений есть в
+// manta (dota_match_metadata.proto), и по ним файл разбирается целиком. Первая
+// версия читала четыре поля, угаданных по дампу, и из-за этого мимо проходило
+// всё остальное — включая список лучших, который лежал в девятом поле.
 package meta
 
 import (
 	"errors"
 	"fmt"
-	"math"
+	"strings"
+
+	mdota "github.com/dotabuff/manta/dota"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 )
@@ -37,6 +32,22 @@ type Player struct {
 	LevelUpTimes    []int
 	Stuns           float64
 	FirstItem       map[int]int // item id -> секунда первого появления
+
+	// Оценки самой Valve. Это не общая шкала, а сырые величины разной
+	// природы: бой — доля от нуля до единицы, фарм похож на золото в минуту,
+	// поддержка и пуш — накопленные суммы. Складывать их бессмысленно.
+	FightScore   float64
+	FarmScore    float64
+	SupportScore float64
+	PushScore    float64
+}
+
+// MVP — один из трёх, кого Dota показала после матча.
+type MVP struct {
+	Slot int
+	// Accolades — за что отмечен: «серия убийств», «золото на поддержку»,
+	// геройское достижение вроде проклятия трёх героев у Winter Wyvern.
+	Accolades []string
 }
 
 // Metadata — разобранный файл.
@@ -44,200 +55,23 @@ type Metadata struct {
 	MatchID int64
 	Version int
 	Players []Player
-}
-
-var errShort = errors.New("метаданные обрываются")
-
-type reader struct {
-	b []byte
-	i int
-}
-
-func (r *reader) eof() bool { return r.i >= len(r.b) }
-
-func (r *reader) varint() (uint64, error) {
-	var res uint64
-	var shift uint
-	for {
-		if r.eof() {
-			return 0, errShort
-		}
-		b := r.b[r.i]
-		r.i++
-		res |= uint64(b&0x7f) << shift
-		if b&0x80 == 0 {
-			return res, nil
-		}
-		shift += 7
-		if shift > 63 {
-			return 0, fmt.Errorf("слишком длинный varint")
-		}
-	}
-}
-
-type field struct {
-	num  int
-	wire int
-	val  uint64 // для wire 0
-	buf  []byte // для wire 2
-	f32  float32
-}
-
-func fields(b []byte) ([]field, error) {
-	r := &reader{b: b}
-	var out []field
-	for !r.eof() {
-		key, err := r.varint()
-		if err != nil {
-			return nil, err
-		}
-		f := field{num: int(key >> 3), wire: int(key & 7)}
-		if f.num == 0 {
-			return nil, fmt.Errorf("нулевой номер поля")
-		}
-		switch f.wire {
-		case 0:
-			if f.val, err = r.varint(); err != nil {
-				return nil, err
-			}
-		case 1:
-			if r.i+8 > len(r.b) {
-				return nil, errShort
-			}
-			r.i += 8
-		case 2:
-			n, err := r.varint()
-			if err != nil {
-				return nil, err
-			}
-			if r.i+int(n) > len(r.b) {
-				return nil, errShort
-			}
-			f.buf = r.b[r.i : r.i+int(n)]
-			r.i += int(n)
-		case 5:
-			if r.i+4 > len(r.b) {
-				return nil, errShort
-			}
-			bits := uint32(r.b[r.i]) | uint32(r.b[r.i+1])<<8 |
-				uint32(r.b[r.i+2])<<16 | uint32(r.b[r.i+3])<<24
-			f.f32 = math.Float32frombits(bits)
-			r.i += 4
-		default:
-			return nil, fmt.Errorf("неизвестный тип поля %d", f.wire)
-		}
-		out = append(out, f)
-	}
-	return out, nil
-}
-
-// Parse разбирает распакованный файл метаданных.
-func Parse(raw []byte) (*Metadata, error) {
-	top, err := fields(raw)
-	if err != nil {
-		return nil, fmt.Errorf("верхний уровень: %w", err)
-	}
-	md := &Metadata{}
-	var body []byte
-	for _, f := range top {
-		switch {
-		case f.num == 1 && f.wire == 0:
-			md.Version = int(f.val)
-		case f.num == 2 && f.wire == 0:
-			md.MatchID = int64(f.val)
-		case f.num == 3 && f.wire == 2:
-			body = f.buf
-		}
-	}
-	if body == nil {
-		return nil, fmt.Errorf("в файле нет блока метаданных")
-	}
-	inner, err := fields(body)
-	if err != nil {
-		return nil, fmt.Errorf("блок метаданных: %w", err)
-	}
-	for _, teamField := range inner {
-		if teamField.num != 1 || teamField.wire != 2 || len(teamField.buf) < 32 {
-			continue
-		}
-		teamFields, err := fields(teamField.buf)
-		if err != nil {
-			continue
-		}
-		teamID := 0
-		for _, tf := range teamFields {
-			if tf.num == 1 && tf.wire == 0 {
-				teamID = int(tf.val)
-			}
-		}
-		for _, pf := range teamFields {
-			if pf.num != 2 || pf.wire != 2 {
-				continue
-			}
-			p, err := parsePlayer(pf.buf)
-			if err != nil {
-				continue
-			}
-			p.TeamID = teamID
-			md.Players = append(md.Players, p)
-		}
-	}
-	if len(md.Players) == 0 {
-		return nil, fmt.Errorf("в метаданных нет игроков")
-	}
-	return md, nil
-}
-
-func parsePlayer(buf []byte) (Player, error) {
-	fs, err := fields(buf)
-	if err != nil {
-		return Player{}, err
-	}
-	p := Player{FirstItem: map[int]int{}}
-	for _, f := range fs {
-		switch {
-		case f.num == 2 && f.wire == 0:
-			p.AbilityUpgrades = append(p.AbilityUpgrades, int(f.val))
-		case f.num == 3 && f.wire == 0:
-			p.Slot = int(f.val)
-		case f.num == 22 && f.wire == 0:
-			p.LevelUpTimes = append(p.LevelUpTimes, int(f.val))
-		case f.num == 45 && f.wire == 5:
-			p.Stuns = float64(f.f32)
-		case f.num == 24 && f.wire == 2:
-			snapItems, at, err := parseSnapshot(f.buf)
-			if err != nil {
-				continue
-			}
-			for _, item := range snapItems {
-				if prev, ok := p.FirstItem[item]; !ok || at < prev {
-					p.FirstItem[item] = at
-				}
-			}
-		}
-	}
-	return p, nil
-}
-
-// parseSnapshot читает снимок инвентаря: предметы и момент времени.
-func parseSnapshot(buf []byte) (items []int, at int, err error) {
-	fs, err := fields(buf)
-	if err != nil {
-		return nil, 0, err
-	}
-	for _, f := range fs {
-		switch {
-		case f.num == 1 && f.wire == 0:
-			items = append(items, int(f.val))
-		case f.num == 2 && f.wire == 0:
-			at = int(f.val)
-		}
-	}
-	return items, at, nil
+	// MVP — лучший игрок и два кандидата, в том порядке, в каком их
+	// показывает Dota. Проверено на семи матчах, размеченных вручную:
+	// шесть совпали полностью, седьмой — тот, где разметка делалась по
+	// памяти и сам игрок в ней сомневался.
+	MVP []MVP
 }
 
 // Apply переносит данные метаданных в матч и поднимает уровень детализации.
 func (md *Metadata) Apply(m *dota.Match) int {
+	// Список лучших кладём отдельно от игроков: он про матч целиком, и его
+	// не должно потерять, даже если ни один игрок не сопоставится.
+	if len(md.MVP) > 0 {
+		m.MVP = m.MVP[:0]
+		for _, e := range md.MVP {
+			m.MVP = append(m.MVP, e.Slot)
+		}
+	}
 	bySlot := map[int]Player{}
 	for _, p := range md.Players {
 		bySlot[p.Slot] = p
@@ -276,4 +110,73 @@ func (md *Metadata) Apply(m *dota.Match) int {
 		m.Detail = dota.DetailMeta
 	}
 	return applied
+}
+
+// Parse разбирает файл метаданных.
+func Parse(raw []byte) (*Metadata, error) {
+	var file mdota.CDOTAMatchMetadataFile
+	if err := proto.Unmarshal(raw, &file); err != nil {
+		return nil, fmt.Errorf("метаданные: %w", err)
+	}
+	md := file.GetMetadata()
+	if md == nil {
+		return nil, errors.New("метаданные пусты")
+	}
+	out := &Metadata{MatchID: int64(file.GetMatchId()), Version: int(file.GetVersion())}
+
+	for _, team := range md.GetTeams() {
+		for _, p := range team.GetPlayers() {
+			player := Player{
+				Slot:         int(p.GetPlayerSlot()),
+				TeamID:       int(team.GetDotaTeam()),
+				Stuns:        float64(p.GetStunDuration()),
+				FightScore:   float64(p.GetFightScore()),
+				FarmScore:    float64(p.GetFarmScore()),
+				SupportScore: float64(p.GetSupportScore()),
+				PushScore:    float64(p.GetPushScore()),
+			}
+			for _, a := range p.GetAbilityUpgrades() {
+				player.AbilityUpgrades = append(player.AbilityUpgrades, int(a))
+			}
+			for _, t := range p.GetLevelUpTimes() {
+				player.LevelUpTimes = append(player.LevelUpTimes, int(t))
+			}
+			// Снимки инвентаря идут каждые полминуты. Первое появление
+			// предмета — это и есть время покупки с точностью до снимка.
+			player.FirstItem = map[int]int{}
+			for _, snap := range p.GetInventorySnapshot() {
+				at := int(snap.GetGameTime())
+				for _, item := range snap.GetItemId() {
+					if prev, ok := player.FirstItem[int(item)]; !ok || at < prev {
+						player.FirstItem[int(item)] = at
+					}
+				}
+			}
+			out.Players = append(out.Players, player)
+		}
+	}
+
+	for _, m := range md.GetMvpData().GetMvps() {
+		entry := MVP{Slot: int(m.GetPlayerSlot())}
+		for _, a := range m.GetAccolades() {
+			entry.Accolades = append(entry.Accolades, accoladeName(a.GetType()))
+		}
+		out.MVP = append(out.MVP, entry)
+	}
+	return out, nil
+}
+
+// accoladeName убирает приставки из имени награды: в перечислении они
+// называются kKillEaterEventType_Pudge_EnemyHeroesHooked, а читать это
+// приходится человеку.
+func accoladeName(t mdota.CMvpData_MvpDatum_MvpAccolade_MvpAccoladeType) string {
+	name := t.String()
+	for _, prefix := range []string{
+		"CMvpData_MvpDatum_MvpAccolade_",
+		"kKillEaterEventType_",
+		"kKillEaterEvent_",
+	} {
+		name = strings.TrimPrefix(name, prefix)
+	}
+	return name
 }

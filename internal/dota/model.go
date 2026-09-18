@@ -143,8 +143,11 @@ type Match struct {
 	// ReplaySalt — ключ, без которого реплей не скачать. Его отдаёт Game
 	// Coordinator, а в ответе OpenDota он приходит даром.
 	ReplaySalt uint32
-	Detail     Detail
-	Players    []*Player
+	// MVP — лучший игрок матча и два кандидата в том порядке, в каком их
+	// показала Dota. Приходит из метаданных матча.
+	MVP     []int
+	Detail  Detail
+	Players []*Player
 }
 
 // Player — один игрок в матче.

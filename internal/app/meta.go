@@ -98,6 +98,18 @@ func (a *App) processMeta(matchID int64) {
 		a.Log("сохранение метаданных %d: %v", matchID, err)
 		return
 	}
+	// Лучший игрок и два кандидата — то же, что Dota показывает после матча.
+	// Хранится отдельно от метаданных: на этом учится формула, и доставать
+	// его разбором целого файла при каждом обучении незачем.
+	if len(md.MVP) > 0 {
+		slots := make([]int, 0, len(md.MVP))
+		for _, e := range md.MVP {
+			slots = append(slots, e.Slot)
+		}
+		if err := a.DB.SaveMVP(matchID, slots); err != nil {
+			a.Log("сохранение лучших %d: %v", matchID, err)
+		}
+	}
 	_ = a.DB.SetReplayState(matchID, store.ReplayMeta, "")
 	a.Log("матч %d: метаданные разобраны", matchID)
 	a.Refresh(matchID)

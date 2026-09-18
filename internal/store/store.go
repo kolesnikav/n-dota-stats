@@ -163,6 +163,10 @@ func Open(path string) (*DB, error) {
 		// Затея не прижилась — сводка в подпись не помещается, — но ломать
 		// уже накатанные базы ради её удаления незачем.
 		`ALTER TABLE match_users ADD COLUMN message_kind TEXT`,
+		// Лучший игрок матча и два кандидата — то, что Dota показывает после
+		// игры. Лежит в метаданных матча, поэтому известен по каждому матчу,
+		// а не только по размеченным вручную.
+		`ALTER TABLE matches ADD COLUMN mvp TEXT`,
 		// Свой корпус перцентилей был ошибкой: медианы и кривые берём у
 		// OpenDota. Таблицы сносим, чтобы не занимать место зря.
 		`DROP TABLE IF EXISTS corpus`,
@@ -783,7 +787,16 @@ type LabelledMatch struct {
 // Labelled возвращает размеченные матчи пользователя.
 func (d *DB) Labelled(accountID int64, featureKeys []string) ([]LabelledMatch, error) {
 	rows, err := d.sql.Query(
-		`SELECT match_id, actual FROM match_users WHERE account_id=? AND actual IS NOT NULL AND actual != '[]'`,
+		// Ответ Dota берём из метаданных матча, а к ручной разметке
+		// обращаемся, только если его там нет. Метаданные точнее: разметка
+		// делается по памяти, и на первом же матче она разошлась с тем, что
+		// на самом деле показала игра.
+		`SELECT mu.match_id, COALESCE(NULLIF(m.mvp,''), mu.actual)
+		 FROM match_users mu
+		 JOIN matches m ON m.match_id = mu.match_id
+		 WHERE mu.account_id = ?
+		   AND COALESCE(NULLIF(m.mvp,''), mu.actual) IS NOT NULL
+		   AND COALESCE(NULLIF(m.mvp,''), mu.actual) NOT IN ('', '[]')`,
 		accountID)
 	if err != nil {
 		return nil, err
@@ -1130,4 +1143,45 @@ func (d *DB) AllMatchIDs() ([]int64, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// HeroNames — герои матча по слотам.
+func (d *DB) HeroNames(matchID int64) (map[int]string, error) {
+	rows, err := d.sql.Query(`SELECT player_slot, hero_name FROM players WHERE match_id=?`, matchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var slot int
+		var name string
+		if err := rows.Scan(&slot, &name); err != nil {
+			return nil, err
+		}
+		out[slot] = name
+	}
+	return out, rows.Err()
+}
+
+// SaveMVP запоминает список лучших игроков матча: сам лучший и два кандидата,
+// в том порядке, в каком их показала Dota.
+func (d *DB) SaveMVP(matchID int64, slots []int) error {
+	raw, err := json.Marshal(slots)
+	if err != nil {
+		return err
+	}
+	_, err = d.sql.Exec(`UPDATE matches SET mvp=? WHERE match_id=?`, string(raw), matchID)
+	return err
+}
+
+// MVP возвращает сохранённый список лучших.
+func (d *DB) MVP(matchID int64) []int {
+	var s string
+	if d.sql.QueryRow(`SELECT COALESCE(mvp,'') FROM matches WHERE match_id=?`, matchID).Scan(&s) != nil || s == "" {
+		return nil
+	}
+	var out []int
+	_ = json.Unmarshal([]byte(s), &out)
+	return out
 }

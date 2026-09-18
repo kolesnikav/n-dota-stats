@@ -182,7 +182,19 @@ func (r *Report) top3() []string {
 	if len(r.Snap.Top) == 0 {
 		return nil
 	}
-	out := []string{"", "<b>ЛУЧШИЕ ПО МОЕЙ ФОРМУЛЕ</b>"}
+	var out []string
+	// Если ответ Dota известен, он идёт первым: это факт, а формула — догадка.
+	if len(r.Snap.DotaMVP) > 0 {
+		out = append(out, "", "<b>ЛУЧШИЙ ПО ВЕРСИИ DOTA</b>")
+		for i, name := range r.Snap.DotaMVP {
+			mark := ""
+			if i == 0 {
+				mark = " ← лучший"
+			}
+			out = append(out, fmt.Sprintf("%d. %s%s", i+1, esc(name), mark))
+		}
+	}
+	out = append(out, "", "<b>ЛУЧШИЕ ПО МОЕЙ ФОРМУЛЕ</b>")
 	for i, t := range r.Snap.Top {
 		mark := ""
 		if t.Me {

@@ -119,6 +119,10 @@ type Snapshot struct {
 	Path     SnapPath    `json:"path,omitempty"`
 	DeathsAt []SnapPoint `json:"deaths_at,omitempty"`
 
+	// DotaMVP — кого показала сама Dota: лучший и два кандидата. Это ответ, а
+	// не догадка, поэтому он и в снимке, и в сводке идёт впереди формулы.
+	DotaMVP []string `json:"dota_mvp,omitempty"`
+
 	Top     []SnapTop `json:"top,omitempty"`
 	Place   int       `json:"place,omitempty"`
 	Score   float64   `json:"score,omitempty"`
@@ -135,6 +139,11 @@ func Snap(m *dota.Match, p *dota.Player) Snapshot {
 		RankTier:   p.RankTier,
 		RoleManual: p.RoleSource == dota.SourceManual,
 		Partial:    m.Detail < dota.DetailMeta,
+	}
+	for _, slot := range m.MVP {
+		if best := m.FindBySlot(slot); best != nil {
+			snap.DotaMVP = append(snap.DotaMVP, best.Name())
+		}
 	}
 	snap.Path = packPath(p.Path)
 	for _, d := range p.DeathsAt {
