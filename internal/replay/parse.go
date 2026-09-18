@@ -11,7 +11,9 @@
 //   - обзорные варды и сентри: кто поставил, когда, где;
 //   - снятые чужие варды — из боевого лога;
 //   - поминутные кривые золота, опыта, добиваний и отказов;
-//   - смерти с координатами.
+//   - смерти с координатами;
+//   - путь каждого героя с шагом в пять секунд;
+//   - когда и где игрок забирал руны, алтари мудрости и лотосы.
 //
 // Итоги лежат не в боевом логе, а в сущностях: CDOTA_DataRadiant и
 // CDOTA_DataDire (счёт по команде, пять игроков в каждой) и CDOTA_PlayerResource
@@ -50,11 +52,50 @@ type Ward struct {
 	KilledBy int // слот снявшего, -1 если истёк сам
 }
 
+// TrackStep — шаг записи пути в секундах. Пять секунд — это примерно длина
+// одного рывка героя: мельче не нужно для вопросов вида «далеко ли ходил», а
+// крупнее уже теряет ходку к руне.
+const TrackStep = 5
+
+// Track — путь героя: позиции через равные промежутки от гудка.
+//
+// Координаты умножены на четыре и округлены: карта в наших единицах занимает
+// 128 на 128, так что четверть единицы — это около тридцати игровых, чего
+// хватает, чтобы отличить лагерь от линии, а место в базе не раздувается.
+type Track struct {
+	Step int     `json:"step"`
+	X    []int16 `json:"x"`
+	Y    []int16 `json:"y"`
+}
+
+// At возвращает позицию на заданной секунде.
+func (t Track) At(sec int) (x, y float64, ok bool) {
+	if t.Step <= 0 || sec < 0 {
+		return 0, 0, false
+	}
+	i := sec / t.Step
+	if i >= len(t.X) || i >= len(t.Y) || (t.X[i] == 0 && t.Y[i] == 0) {
+		return 0, 0, false
+	}
+	return float64(t.X[i]) / 4, float64(t.Y[i]) / 4, true
+}
+
+// Pickup — подобранный ресурс карты.
+type Pickup struct {
+	Time int    `json:"t"`
+	Kind string `json:"k"`           // shrine, lotus, rune
+	Rune int    `json:"r,omitempty"` // тип руны, если это руна
+}
+
 // Death — смерть героя с координатами.
+//
+// Zone — грубая зона из боевого лога: 1 нижняя, 2 центр, 3 верхняя. Она
+// приходит от Valve и служит проверкой координат, которые мы берём сами.
 type Death struct {
 	Slot int
 	Time int
 	X, Y float64
+	Zone int
 }
 
 // PlayerStats — что удалось посчитать по игроку.
@@ -73,6 +114,10 @@ type PlayerStats struct {
 	DNT       []int
 	Wards     []Ward
 	Deaths    []Death
+	// Track — путь героя, Pickups — когда он забирал алтари, лотосы и руны.
+	// Вместе они отвечают на вопрос, во что обошлась ходка за ресурсом.
+	Track   Track
+	Pickups []Pickup
 
 	// ItemUses и AbilityUses — сколько раз применён предмет или способность,
 	// HeroHits — сколько применений способности задело героя. Всё по боевому
@@ -227,6 +272,14 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 	lastMinute := map[string]int{"CDOTA_DataRadiant": -1, "CDOTA_DataDire": -1}
 	// Когда в последний раз снимали итоги с каждой сущности.
 	lastTotals := map[string]int{}
+	// Время подборов сразу в секундах: они считаются по счётчику, который
+	// снимается уже после гудка, поэтому перевод из тиков им не нужен.
+	// Прошлые значения счётчиков ресурсов карты: по их приросту узнаём момент,
+	// когда игрок забрал алтарь или лотос. Отдельного события в логе для них
+	// нет, а знать время нужно — без него непонятно, чего стоила ходка.
+	lastPick := map[int][3]int{} // слот -> {алтари, лотосы, руны}
+	// Исчезнувшие руны: время и тип. Нужны, чтобы у подбора появился тип.
+	var runeTaken []runePickup
 
 	// Использования вардовых предметов из боевого лога. По ним определяется
 	// владелец обзорного варда: у самой сущности ссылки на хозяина нет.
@@ -247,11 +300,20 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 
 		switch {
 		case cn == "CDOTA_Item_Rune":
-			if startTick != 0 || op&manta.EntityOpCreated == 0 {
-				return nil
+			rt := int32(-1)
+			if v, ok := e.GetInt32("m_iRuneType"); ok {
+				rt = v
 			}
-			if rt, ok := e.GetInt32("m_iRuneType"); ok && rt == 5 {
+			if op&manta.EntityOpCreated != 0 && startTick == 0 && rt == 5 {
+				// Начало игры — по первой баунти-руне: они появляются в 0:00.
 				startTick = p.Tick
+			}
+			if op&manta.EntityOpDeleted != 0 {
+				// Руна исчезла — значит её подобрали. Записи об этом в боевом
+				// логе нет вовсе (проверено перебором: событий PICKUP_RUNE в
+				// реплее ноль), поэтому тип запоминаем здесь, а кому засчитать
+				// — узнаём по приросту счётчика игрока.
+				runeTaken = append(runeTaken, runePickup{Tick: tick(), Type: int(rt)})
 			}
 
 		case strings.HasPrefix(cn, "CDOTA_Unit_Hero_"):
@@ -270,6 +332,15 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 				return nil
 			}
 			heroByIndex[e.GetIndex()] = slot
+			if x, y := cellPos(e); x > 0 {
+				if t := gameTime(); t >= 0 {
+					ps := res.player(slot)
+					ps.Track.Step = TrackStep
+					i := t / TrackStep
+					ps.Track.X = putAt(ps.Track.X, i, int16(x*4+0.5))
+					ps.Track.Y = putAt(ps.Track.Y, i, int16(y*4+0.5))
+				}
+			}
 			// Боевой лог называет героев по-своему. Раз уж слот известен,
 			// запоминаем и это имя — тогда таблица имён строится из самого
 			// реплея, а не из догадок о том, как Valve зовёт героя.
@@ -347,7 +418,25 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 			if int(p.Tick)-lastTotals[cn] >= 2*tickRate {
 				lastTotals[cn] = int(p.Tick)
 				for i := 0; i < 5; i++ {
-					readTeamTotals(e, fmt.Sprintf("m_vecDataTeam.%04d.", i), &res.player(base+i).Totals)
+					slot := base + i
+					ps := res.player(slot)
+					readTeamTotals(e, fmt.Sprintf("m_vecDataTeam.%04d.", i), &ps.Totals)
+					was := lastPick[slot]
+					now := [3]int{ps.Totals.WisdomShrines, ps.Totals.LotusesTaken, ps.Totals.RunePickups}
+					if t := gameTime(); t >= 0 {
+						for n := was[0]; n < now[0]; n++ {
+							ps.Pickups = append(ps.Pickups, Pickup{Time: t, Kind: "shrine"})
+						}
+						for n := was[1]; n < now[1]; n++ {
+							ps.Pickups = append(ps.Pickups, Pickup{Time: t, Kind: "lotus"})
+						}
+						for n := was[2]; n < now[2]; n++ {
+							ps.Pickups = append(ps.Pickups, Pickup{
+								Time: t, Kind: "rune", Rune: claimRune(runeTaken, tick()),
+							})
+						}
+					}
+					lastPick[slot] = now
 				}
 			}
 
@@ -539,9 +628,15 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 				return nil
 			}
 			ps := res.player(slot)
+			// Координат в записи о смерти нет: поля location_x и location_y
+			// в этом патче не заполняются вовсе. Берём последнюю известную
+			// позицию героя из сущностей — она обновляется в том же потоке и
+			// на момент смерти отстаёт не больше чем на тик.
+			pos := heroPos[slot]
 			ps.Deaths = append(ps.Deaths, Death{
 				Slot: slot, Time: tick(),
-				X: float64(entry.GetLocationX()), Y: float64(entry.GetLocationY()),
+				X: pos[0], Y: pos[1],
+				Zone: int(entry.GetEventLocation()),
 			})
 		}
 		return nil
@@ -576,6 +671,7 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		}
 	}
 	for slot, ps := range res.Players {
+		sort.Slice(ps.Pickups, func(i, j int) bool { return ps.Pickups[i].Time < ps.Pickups[j].Time })
 		sort.Slice(ps.Deaths, func(i, j int) bool { return ps.Deaths[i].Time < ps.Deaths[j].Time })
 		sort.Slice(ps.Wards, func(i, j int) bool { return ps.Wards[i].Placed < ps.Wards[j].Placed })
 		// Линию считаем здесь, пока голоса ещё в памяти: наружу и в базу
@@ -944,4 +1040,42 @@ func npcName(className string) string {
 		b.WriteRune(r)
 	}
 	return "npc_dota_hero_" + b.String()
+}
+
+// putAt кладёт значение по индексу, растягивая срез. В отличие от appendAt
+// пропуски остаются нулями: для пути это честнее, чем повторять последнюю
+// известную точку, — ноль означает «героя не видели», а не «стоял на месте».
+func putAt(s []int16, i int, v int16) []int16 {
+	for len(s) <= i {
+		s = append(s, 0)
+	}
+	s[i] = v
+	return s
+}
+
+// runePickup — исчезнувшая с карты руна.
+type runePickup struct {
+	Tick int
+	Type int
+}
+
+// claimRune подбирает тип руны к моменту, когда у игрока вырос счётчик.
+//
+// Счётчик снимается раз в две секунды, поэтому точное совпадение по времени
+// невозможно: берём ближайшую руну, исчезнувшую в пределах этого окна.
+func claimRune(taken []runePickup, at int) int {
+	best, bestGap := -1, 3*tickRate
+	for _, r := range taken {
+		gap := at - r.Tick
+		if gap < 0 {
+			gap = -gap
+		}
+		if gap <= bestGap {
+			best, bestGap = r.Type, gap
+		}
+	}
+	if best < 0 {
+		return 0
+	}
+	return best
 }
