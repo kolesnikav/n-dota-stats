@@ -260,48 +260,6 @@ func roleKeyboard(matchID int64) telegram.Keyboard {
 	return kb
 }
 
-// mvpKeyboard — кнопки разметки реального топ-3.
-func mvpKeyboard(matchID int64, ranked []mvp.Scored, step int, chosen map[int]bool, ctx viewCtx) telegram.Keyboard {
-	id := strconv.FormatInt(matchID, 10)
-	kb := telegram.Keyboard{}
-	var row []telegram.Button
-	for place, s := range ranked {
-		if chosen[s.Player.Slot] {
-			continue
-		}
-		label := fmt.Sprintf("%s %s", s.Player.Name(), sideLetter(s.Player))
-		if place < 3 {
-			label = fmt.Sprintf("%d· %s", place+1, label)
-		}
-		row = append(row, telegram.Button{
-			Text: label,
-			Data: fmt.Sprintf("m:%s:%d:%d:%s", id, s.Player.Slot, step, ctx.encode()),
-		})
-		if len(row) == 2 {
-			kb = append(kb, row)
-			row = nil
-		}
-	}
-	if len(row) > 0 {
-		kb = append(kb, row)
-	}
-	kb = append(kb, []telegram.Button{{Text: "пропустить", Data: fmt.Sprintf("m:%s:x:%d:%s", id, step, ctx.encode())}})
-	return kb
-}
-
-func sideLetter(p *dota.Player) string {
-	if p.IsRadiant {
-		return "R"
-	}
-	return "D"
-}
-
-var stepQuestion = map[int]string{
-	1: "Кого Dota показала <b>лучшим игроком</b>?",
-	2: "Кто был <b>вторым</b> на экране?",
-	3: "Кто был <b>третьим</b>?",
-}
-
 // usersCard рисует карточку пользователя для админки.
 func usersCard(users []store.User, idx int, db *store.DB) (string, telegram.Keyboard) {
 	if len(users) == 0 {

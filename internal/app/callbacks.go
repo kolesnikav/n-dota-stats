@@ -29,8 +29,6 @@ func (a *App) onCallback(u telegram.Update) {
 	switch parts[0] {
 	case "r": // роль
 		a.roleCallback(chatID, msgID, parts)
-	case "m": // разметка MVP
-		a.markCallback(chatID, msgID, parts)
 	case "u": // админка
 		a.adminCallback(chatID, msgID, parts)
 	case "k": // тепловая карта
@@ -39,8 +37,6 @@ func (a *App) onCallback(u telegram.Update) {
 		a.mapCallback(chatID, msgID, parts, true)
 	case "b": // возврат от карты к сводке
 		a.backCallback(chatID, msgID, parts)
-	case "mm": // начать разметку настоящего топ-3
-		a.startMarkCallback(chatID, msgID, parts)
 	case "h": // листание истории
 		a.historyCallback(chatID, msgID, parts)
 	}
@@ -89,161 +85,6 @@ func (a *App) roleCallback(chatID, msgID int64, parts []string) {
 	if err := a.EditSummary(chatID, msgID, rep.Text(), rep, viewCtx{Kind: "s"}, roleRow(matchID)); err != nil {
 		a.Log("правка сводки %d: %v", matchID, err)
 	}
-}
-
-// startMarkCallback превращает сводку в первый вопрос разметки.
-//
-// Вопрос занимает то же сообщение: это правка текста на текст, которую
-// телеграм разрешает, так что удалять и слать заново не нужно.
-func (a *App) startMarkCallback(chatID, msgID int64, parts []string) {
-	if len(parts) < 3 {
-		return
-	}
-	matchID, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return
-	}
-	account, ok := a.viewAccount(chatID, parts[2])
-	if !ok || account != a.accountOf(chatID) {
-		// Размечает только сам игрок: это его ответ про экран Dota, и на нём
-		// учится его формула.
-		return
-	}
-	ctx := viewCtx{Kind: "s"}
-	if len(parts) > 3 {
-		ctx = decodeCtx(parts[3])
-	}
-	m, err := a.LoadMatch(matchID, account)
-	if err != nil {
-		return
-	}
-	rep, err := a.Build(m, account)
-	if err != nil {
-		return
-	}
-	delete(a.marking, markKey(matchID, account))
-	_ = a.Bot.Edit(chatID, msgID, stepQuestion[1],
-		mvpKeyboard(matchID, rep.Ranked, 1, map[int]bool{}, ctx))
-}
-
-// accountOf — привязанный аккаунт чата.
-func (a *App) accountOf(chatID int64) int64 {
-	u, ok := a.DB.User(chatID)
-	if !ok {
-		return 0
-	}
-	return u.AccountID
-}
-
-func markKey(matchID, accountID int64) string {
-	return fmt.Sprintf("%d:%d", matchID, accountID)
-}
-
-func (a *App) markCallback(chatID, msgID int64, parts []string) {
-	if len(parts) < 4 {
-		return
-	}
-	u, ok := a.userFor(chatID)
-	if !ok {
-		return
-	}
-	matchID, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return
-	}
-	step, err := strconv.Atoi(parts[3])
-	if err != nil {
-		return
-	}
-	ctx := viewCtx{Kind: "s"}
-	if len(parts) > 4 {
-		ctx = decodeCtx(parts[4])
-	}
-	key := markKey(matchID, u.AccountID)
-	chosen := a.marking[key]
-
-	if parts[2] == "x" { // пропустить
-		delete(a.marking, key)
-		_ = a.DB.SetActual(matchID, u.AccountID, chosen)
-		a.finishMark(chatID, msgID, matchID, u.AccountID, chosen, ctx)
-		return
-	}
-	slot, err := strconv.Atoi(parts[2])
-	if err != nil {
-		return
-	}
-	chosen = append(chosen, slot)
-	a.marking[key] = chosen
-
-	if step < 3 {
-		rep, err := a.Report(chatID, u.AccountID, matchID)
-		if err == nil {
-			taken := map[int]bool{}
-			for _, s := range chosen {
-				taken[s] = true
-			}
-			_ = a.Bot.Edit(chatID, msgID, stepQuestion[step+1],
-				mvpKeyboard(matchID, rep.Ranked, step+1, taken, ctx))
-			return
-		}
-	}
-	delete(a.marking, key)
-	_ = a.DB.SetActual(matchID, u.AccountID, chosen)
-	a.finishMark(chatID, msgID, matchID, u.AccountID, chosen, ctx)
-}
-
-// finishMark показывает, что получилось, и оставляет дорогу обратно к сводке.
-func (a *App) finishMark(chatID, msgID, matchID, accountID int64, chosen []int, ctx viewCtx) {
-	kb := telegram.Keyboard{backRow(matchID, accountID, ctx)}
-	_ = a.Bot.Edit(chatID, msgID, a.markSummary(matchID, accountID, chosen), kb)
-}
-
-func (a *App) markSummary(matchID, accountID int64, chosen []int) string {
-	m, err := a.LoadMatch(matchID, accountID)
-	if err != nil {
-		return "Записал."
-	}
-	names := map[int]string{}
-	for _, p := range m.Players {
-		names[p.Slot] = p.Name()
-	}
-	rep, err := a.Build(m, accountID)
-	if err != nil {
-		return "Записал."
-	}
-	var predicted []int
-	for i, s := range rep.Ranked {
-		if i >= 3 {
-			break
-		}
-		predicted = append(predicted, s.Player.Slot)
-	}
-
-	line := func(slots []int) string {
-		parts := make([]string, 0, len(slots))
-		for _, s := range slots {
-			parts = append(parts, esc(names[s]))
-		}
-		return strings.Join(parts, " → ")
-	}
-	lines := []string{"<b>Записал</b>"}
-	if len(chosen) > 0 {
-		lines = append(lines, "Dota: "+line(chosen))
-	}
-	lines = append(lines, "Я: "+line(predicted))
-	switch {
-	case len(chosen) == 0:
-		lines = append(lines, "Пропущено.")
-	case len(predicted) > 0 && predicted[0] == chosen[0]:
-		lines = append(lines, "MVP угадан.")
-	case contains(predicted, chosen[0]):
-		lines = append(lines, "MVP не первый, но в тройке был.")
-	default:
-		lines = append(lines, "Мимо — для обучения это полезнее попадания.")
-	}
-	labelled := len(a.samples(accountID))
-	lines = append(lines, "", fmt.Sprintf("Размечено матчей: <b>%d</b>. /fit пересчитает веса.", labelled))
-	return strings.Join(lines, "\n")
 }
 
 func contains(xs []int, v int) bool {

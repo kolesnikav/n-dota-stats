@@ -776,89 +776,6 @@ func (d *DB) Weights(accountID int64) ([]float64, bool) {
 
 // ---------------------------------------------------------------- обучение
 
-// LabelledMatch — размеченный матч для обучения модели.
-type LabelledMatch struct {
-	MatchID int64
-	Actual  []int
-	Slots   []int
-	Vectors [][]float64
-}
-
-// Labelled возвращает размеченные матчи пользователя.
-func (d *DB) Labelled(accountID int64, featureKeys []string) ([]LabelledMatch, error) {
-	rows, err := d.sql.Query(
-		// Ответ Dota берём из метаданных матча, а к ручной разметке
-		// обращаемся, только если его там нет. Метаданные точнее: разметка
-		// делается по памяти, и на первом же матче она разошлась с тем, что
-		// на самом деле показала игра.
-		`SELECT mu.match_id, COALESCE(NULLIF(m.mvp,''), mu.actual)
-		 FROM match_users mu
-		 JOIN matches m ON m.match_id = mu.match_id
-		 WHERE mu.account_id = ?
-		   AND COALESCE(NULLIF(m.mvp,''), mu.actual) IS NOT NULL
-		   AND COALESCE(NULLIF(m.mvp,''), mu.actual) NOT IN ('', '[]')`,
-		accountID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	type pair struct {
-		id     int64
-		actual []int
-	}
-	var pairs []pair
-	for rows.Next() {
-		var id int64
-		var s string
-		if err := rows.Scan(&id, &s); err != nil {
-			return nil, err
-		}
-		var act []int
-		_ = json.Unmarshal([]byte(s), &act)
-		if len(act) > 0 {
-			pairs = append(pairs, pair{id, act})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	var out []LabelledMatch
-	for _, p := range pairs {
-		prows, err := d.sql.Query(
-			`SELECT player_slot, COALESCE(features,'{}') FROM players WHERE match_id=? ORDER BY player_slot`, p.id)
-		if err != nil {
-			return nil, err
-		}
-		lm := LabelledMatch{MatchID: p.id, Actual: p.actual}
-		for prows.Next() {
-			var slot int
-			var feat string
-			if err := prows.Scan(&slot, &feat); err != nil {
-				_ = prows.Close()
-				return nil, err
-			}
-			bench := map[string]float64{}
-			_ = json.Unmarshal([]byte(feat), &bench)
-			vec := make([]float64, len(featureKeys))
-			for i, k := range featureKeys {
-				v, ok := bench[k]
-				if !ok {
-					v = 0.5
-				}
-				vec[i] = v
-			}
-			lm.Slots = append(lm.Slots, slot)
-			lm.Vectors = append(lm.Vectors, vec)
-		}
-		_ = prows.Close()
-		if len(lm.Slots) > 1 {
-			out = append(out, lm)
-		}
-	}
-	return out, nil
-}
-
 // AverageOnHero — среднее по прошлым матчам на этом герое, независимо от роли.
 // Нужно для показателей вроде точности стрелы: она зависит от героя, а не от
 // позиции, и разбивать выборку по ролям значит потерять её.
@@ -1184,4 +1101,25 @@ func (d *DB) MVP(matchID int64) []int {
 	var out []int
 	_ = json.Unmarshal([]byte(s), &out)
 	return out
+}
+
+// AccountMatches — матчи, в которых играл этот аккаунт.
+func (d *DB) AccountMatches(accountID int64) ([]int64, error) {
+	rows, err := d.sql.Query(
+		`SELECT mu.match_id FROM match_users mu
+		 JOIN matches m ON m.match_id = mu.match_id
+		 WHERE mu.account_id = ? ORDER BY m.start_time`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

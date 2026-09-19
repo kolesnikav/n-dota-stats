@@ -38,23 +38,42 @@ var Features = []Feature{
 	{Key: "deaths_per_min", Label: "смерти", Invert: true},
 }
 
+// Leaders — признаки вида «первый в своей команде по этой величине».
+//
+// Так Dota и раздаёт награды, по которым выбирает лучшего: золото на
+// поддержку, поставленные варды и денаи достаются лидеру команды во всех
+// проверенных матчах, убийства — в семи случаях из восьми. Сами по себе
+// перцентили этого не выражают: они сравнивают с тысячами чужих игр, а не с
+// четырьмя товарищами по команде.
+var Leaders = []Feature{
+	{Key: "kills", Label: "больше всех убийств в команде"},
+	{Key: "assists", Label: "больше всех помощи"},
+	{Key: "last_hits", Label: "больше всех добиваний"},
+	{Key: "denies", Label: "больше всех денаев"},
+	{Key: "net_worth", Label: "богаче всех в команде"},
+	{Key: "camps_stacked", Label: "больше всех стаков"},
+	{Key: "wards", Label: "больше всех вардов"},
+	{Key: "dewards", Label: "больше всех снятых вардов"},
+	{Key: "deaths", Label: "меньше всех смертей", Invert: true},
+}
+
 // Dim — размерность вектора признаков.
-func Dim() int { return len(Features) }
+func Dim() int { return len(Features) + len(Leaders) }
 
 // EqualWeights — стартовые веса: все признаки равны.
 func EqualWeights() []float64 {
-	w := make([]float64, len(Features))
+	w := make([]float64, Dim())
 	for i := range w {
 		w[i] = 1
 	}
 	return w
 }
 
-// Vector строит вектор перцентилей игрока. Отсутствующий показатель — 0.5,
-// то есть нейтрально.
-func Vector(p *dota.Player) []float64 {
-	vec := make([]float64, len(Features))
-	for i, f := range Features {
+// Vector строит вектор признаков игрока: перцентили по герою и признаки
+// лидерства в команде. Отсутствующий перцентиль — 0.5, то есть нейтрально.
+func Vector(m *dota.Match, p *dota.Player) []float64 {
+	vec := make([]float64, 0, Dim())
+	for _, f := range Features {
 		v, ok := p.Benchmarks[f.Key]
 		if !ok {
 			v = 0.5
@@ -62,9 +81,65 @@ func Vector(p *dota.Player) []float64 {
 		if f.Invert {
 			v = 1 - v
 		}
-		vec[i] = v
+		vec = append(vec, v)
+	}
+	best := teamBest(m)
+	for _, f := range Leaders {
+		if leaderStat(p, f.Key) >= best[f.Key][side(p)] {
+			vec = append(vec, 1)
+		} else {
+			vec = append(vec, 0)
+		}
 	}
 	return vec
+}
+
+func side(p *dota.Player) int {
+	if p.IsRadiant {
+		return 0
+	}
+	return 1
+}
+
+// leaderStat — величина, по которой смотрим лидерство. Смерти со знаком
+// минус: меньше значит лучше, и сравнение остаётся одним и тем же.
+func leaderStat(p *dota.Player, key string) float64 {
+	switch key {
+	case "kills":
+		return float64(p.Kills)
+	case "assists":
+		return float64(p.Assists)
+	case "last_hits":
+		return float64(p.LastHits)
+	case "denies":
+		return float64(p.Denies)
+	case "net_worth":
+		return float64(p.NetWorth)
+	case "camps_stacked":
+		return float64(p.CampsStacked)
+	case "wards":
+		return float64(p.ObsPlaced + p.SenPlaced)
+	case "dewards":
+		return float64(p.ObsKilled + p.SenKilled)
+	case "deaths":
+		return -float64(p.Deaths)
+	}
+	return 0
+}
+
+// teamBest — лучшее значение в каждой команде по каждой величине.
+func teamBest(m *dota.Match) map[string][2]float64 {
+	out := map[string][2]float64{}
+	for _, f := range Leaders {
+		best := [2]float64{math.Inf(-1), math.Inf(-1)}
+		for _, p := range m.Players {
+			if v := leaderStat(p, f.Key); v > best[side(p)] {
+				best[side(p)] = v
+			}
+		}
+		out[f.Key] = best
+	}
+	return out
 }
 
 // Score — взвешенная оценка признаков, всегда в диапазоне 0..1.
@@ -98,12 +173,12 @@ type Scored struct {
 
 // Rank сортирует игроков матча по убыванию оценки.
 func Rank(m *dota.Match, weights []float64) []Scored {
-	if len(weights) != len(Features) {
+	if len(weights) != Dim() {
 		weights = EqualWeights()
 	}
 	out := make([]Scored, 0, len(m.Players))
 	for _, p := range m.Players {
-		vec := Vector(p)
+		vec := Vector(m, p)
 		out = append(out, Scored{Player: p, Vector: vec, Score: Score(weights, vec)})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -161,7 +236,7 @@ func softmax(scores []float64) []float64 {
 // Train подбирает веса градиентным подъёмом по лог-правдоподобию с L2.
 // Возвращает веса и среднее лог-правдоподобие.
 func Train(samples []Sample, l2 float64, steps int, lr float64) ([]float64, float64) {
-	dim := len(Features)
+	dim := Dim()
 	usable := make([]Sample, 0, len(samples))
 	for _, s := range samples {
 		if s.target() >= 0 && len(s.Vectors) > 1 {
@@ -264,13 +339,14 @@ func Describe(weights []float64) []WeightShare {
 	if total == 0 {
 		total = 1
 	}
-	out := make([]WeightShare, 0, len(Features))
-	for i, f := range Features {
+	all := append(append([]Feature{}, Features...), Leaders...)
+	out := make([]WeightShare, 0, len(all))
+	for i, f := range all {
 		if i >= len(weights) {
 			break
 		}
 		label := f.Label
-		if f.Invert {
+		if f.Invert && i < len(Features) {
 			label += " (меньше=лучше)"
 		}
 		out = append(out, WeightShare{Label: label, Raw: weights[i], Share: 100 * weights[i] / total})

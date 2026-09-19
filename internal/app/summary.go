@@ -122,13 +122,10 @@ func (a *App) reportFromSnapshot(accountID, matchID int64) (*Report, bool) {
 
 // summaryKeyboard — кнопки под текстовой сводкой.
 //
-// Разметку предлагаем только пока её нет: повторно указывать лучших незачем,
-// а кнопка, которая ничего не меняет, только занимает место.
+// Кнопки разметки больше нет: настоящий топ-3 приходит в метаданных матча, и
+// спрашивать его у человека незачем — он отвечает по памяти и ошибается.
 func (a *App) summaryKeyboard(matchID, accountID int64, ctx viewCtx, extra ...[]telegram.Button) telegram.Keyboard {
 	kb := telegram.Keyboard{mapRow(matchID, accountID, ctx)}
-	if len(a.DB.Actual(matchID, accountID)) == 0 {
-		kb = append(kb, markRow(matchID, accountID, ctx))
-	}
 	return append(kb, extra...)
 }
 

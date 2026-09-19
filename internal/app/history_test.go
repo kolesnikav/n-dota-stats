@@ -104,14 +104,3 @@ func TestViewCtxRoundTrip(t *testing.T) {
 		}
 	}
 }
-
-// Кнопка разметки несёт матч, игрока и место просмотра — как и остальные.
-func TestMarkRow(t *testing.T) {
-	btn := markRow(9003682980, 109779233, viewCtx{Kind: "h", Page: 7})[0]
-	if btn.Data != "mm:9003682980:109779233:h7" {
-		t.Errorf("кнопка разметки ведёт на %q", btn.Data)
-	}
-	if len(btn.Data) > 64 {
-		t.Errorf("данные кнопки длиной %d", len(btn.Data))
-	}
-}

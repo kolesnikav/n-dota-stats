@@ -338,33 +338,33 @@ func (a *App) cmdStats(chatID int64) {
 	_, _ = a.Bot.Send(chatID, strings.Join(lines, "\n"), nil)
 }
 
+// samples собирает выборку для обучения.
+//
+// Ответ берётся из метаданных матча — тот самый список, который Dota
+// показывает после игры. Раньше приходилось спрашивать человека, и ответов
+// было семь; теперь их столько же, сколько разобранных матчей.
 func (a *App) samples(accountID int64) []mvp.Sample {
-	keys := make([]string, 0, mvp.Dim())
-	for _, f := range mvp.Features {
-		keys = append(keys, f.Key)
-	}
-	labelled, err := a.DB.Labelled(accountID, keys)
+	ids, err := a.DB.AccountMatches(accountID)
 	if err != nil {
 		a.Log("выборка для обучения: %v", err)
 		return nil
 	}
-	out := make([]mvp.Sample, 0, len(labelled))
-	for _, lm := range labelled {
-		if len(lm.Actual) == 0 {
+	out := make([]mvp.Sample, 0, len(ids))
+	for _, id := range ids {
+		best := a.DB.MVP(id)
+		if len(best) == 0 {
 			continue
 		}
-		// инвертируем признаки, где меньше значит лучше
-		vectors := make([][]float64, len(lm.Vectors))
-		for i, v := range lm.Vectors {
-			nv := append([]float64(nil), v...)
-			for j, f := range mvp.Features {
-				if f.Invert && j < len(nv) {
-					nv[j] = 1 - nv[j]
-				}
-			}
-			vectors[i] = nv
+		m, err := a.LoadMatch(id, 0)
+		if err != nil || len(m.Players) < 2 {
+			continue
 		}
-		out = append(out, mvp.Sample{Vectors: vectors, Slots: lm.Slots, MVPSlot: lm.Actual[0]})
+		s := mvp.Sample{MVPSlot: best[0]}
+		for _, p := range m.Players {
+			s.Vectors = append(s.Vectors, mvp.Vector(m, p))
+			s.Slots = append(s.Slots, p.Slot)
+		}
+		out = append(out, s)
 	}
 	return out
 }

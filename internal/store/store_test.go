@@ -6,7 +6,6 @@ import (
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/fixture"
-	"github.com/kolesnikav/n-dota-stats/internal/mvp"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
 )
 
@@ -144,37 +143,6 @@ func TestTwoUsersShareMatchWithOwnLabels(t *testing.T) {
 	parts, err := db.Participants(m.ID)
 	if err != nil || len(parts) != 2 {
 		t.Fatalf("участников %d, ошибка %v", len(parts), err)
-	}
-}
-
-func TestLabelledBuildsVectors(t *testing.T) {
-	db := open(t)
-	m, _ := fixture.Match8999344582()
-	_ = db.SaveMatch(m, []byte(`{}`))
-	ww := m.FindByHero("Winter Wyvern")
-	me := m.FindByHero("Mirana")
-	_ = db.LinkMatchUser(store.MatchUser{
-		MatchID: m.ID, AccountID: me.AccountID, ChatID: 1, Role: dota.RoleHard,
-	}, nil)
-	_ = db.SetActual(m.ID, me.AccountID, []int{ww.Slot})
-
-	keys := make([]string, 0, mvp.Dim())
-	for _, f := range mvp.Features {
-		keys = append(keys, f.Key)
-	}
-	labelled, err := db.Labelled(me.AccountID, keys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(labelled) != 1 {
-		t.Fatalf("размеченных матчей %d", len(labelled))
-	}
-	if len(labelled[0].Vectors) != 10 || len(labelled[0].Vectors[0]) != mvp.Dim() {
-		t.Fatalf("векторы: %d игроков по %d признаков",
-			len(labelled[0].Vectors), len(labelled[0].Vectors[0]))
-	}
-	if labelled[0].Actual[0] != ww.Slot {
-		t.Errorf("метка %v, ждали слот %d", labelled[0].Actual, ww.Slot)
 	}
 }
 
@@ -338,7 +306,6 @@ func TestSecondPlayerLinksToKnownMatch(t *testing.T) {
 }
 
 // Ответ Dota хранится у матча и используется для обучения вместо ручной
-// разметки: он точнее — размечают по памяти, а метаданные приходят от игры.
 func TestMVPPreferredOverManualMarking(t *testing.T) {
 	db := open(t)
 	const acc = int64(11)
@@ -382,21 +349,10 @@ func TestMVPPreferredOverManualMarking(t *testing.T) {
 		t.Errorf("у матча без ответа игры вернулось %v", got)
 	}
 
-	labelled, err := db.Labelled(acc, []string{"gold_per_min"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(labelled) != 2 {
-		t.Fatalf("матчей для обучения %d, ждали 2", len(labelled))
-	}
-	byID := map[int64][]int{}
-	for _, lm := range labelled {
-		byID[lm.MatchID] = lm.Actual
-	}
-	if got := byID[801]; len(got) == 0 || got[0] != 130 {
-		t.Errorf("для матча с ответом игры взята разметка: %v", got)
-	}
-	if got := byID[802]; len(got) == 0 || got[0] != 5 {
-		t.Errorf("для матча без ответа игры разметка потеряна: %v", got)
+	// Ручная разметка больше не участвует в обучении: её место занял ответ
+	// игры. Оставлена она только как след — по ней видно, где человек
+	// ошибался, когда отвечал по памяти.
+	if got := db.Actual(801, acc); len(got) == 0 || got[0] != 128 {
+		t.Errorf("прежняя разметка потеряна: %v", got)
 	}
 }

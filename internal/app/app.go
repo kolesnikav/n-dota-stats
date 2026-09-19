@@ -40,8 +40,6 @@ type App struct {
 
 	// незавершённые диалоги: чат -> что ждём от него
 	pending map[int64]string
-	// частичная разметка MVP: ключ "matchID:accountID" -> слоты
-	marking map[string][]int
 }
 
 // New собирает приложение.
@@ -56,7 +54,6 @@ func New(db *store.DB, bot *telegram.Bot, src MatchSource, od *odota.Client) *Ap
 			fmt.Fprintf(os.Stderr, "[%s] "+f+"\n", append([]any{time.Now().Format("15:04:05")}, a...)...)
 		},
 		pending: map[int64]string{},
-		marking: map[string][]int{},
 	}
 }
 
