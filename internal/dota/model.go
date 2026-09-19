@@ -204,6 +204,7 @@ type Player struct {
 	// отвечает на вопрос «где», а не «сколько».
 	Path     []Point
 	DeathsAt []Point
+	KillsAt  []Point
 
 	GoldT           []int // по минутам, нарастающим итогом
 	XPT             []int

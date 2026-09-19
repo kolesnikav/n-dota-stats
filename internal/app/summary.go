@@ -35,15 +35,19 @@ func mapFor(snap analysis.Snapshot, window string) []byte {
 	if len(path) == 0 {
 		return nil
 	}
-	deaths := make([]dota.Point, 0, len(snap.DeathsAt))
-	for _, d := range snap.DeathsAt {
-		deaths = append(deaths, dota.Point{T: d.T, X: float64(d.X) / 4, Y: float64(d.Y) / 4})
+	unpack := func(pts []analysis.SnapPoint) []dota.Point {
+		out := make([]dota.Point, 0, len(pts))
+		for _, p := range pts {
+			out = append(out, dota.Point{T: p.T, X: float64(p.X) / 4, Y: float64(p.Y) / 4})
+		}
+		return out
 	}
+	deaths, kills := unpack(snap.DeathsAt), unpack(snap.KillsAt)
 	to := 0
 	if window == windowLane {
 		to = laneWindow
 	}
-	img, err := heatmap.Render(heatmap.Options{Path: path, Deaths: deaths, To: to})
+	img, err := heatmap.Render(heatmap.Options{Path: path, Deaths: deaths, Kills: kills, To: to})
 	if err != nil {
 		return nil
 	}

@@ -151,8 +151,15 @@ func mapCaption(snap analysis.Snapshot, window string) string {
 			died++
 		}
 	}
+	killed := 0
+	for _, k := range snap.KillsAt {
+		if window != windowLane || k.T <= laneWindow {
+			killed++
+		}
+	}
 	return esc(snap.Hero) + " · " + esc(snap.Role.String()) + " · " + outcomeWord(snap.Win) +
-		"\n" + when + " · крестами отмечены смерти (" + strconv.Itoa(died) + ")"
+		"\n" + when + " · ✖ твои смерти (" + strconv.Itoa(died) +
+		") · ● убитые враги (" + strconv.Itoa(killed) + ")"
 }
 
 func outcomeWord(win bool) string {

@@ -14,6 +14,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"math"
+	"sort"
 
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 )
@@ -38,19 +39,20 @@ const Size = 640
 // героя: меньше даёт рваные пятна, больше смазывает разницу между линией и
 // лесом.
 //
-// contrast — степень сжатия плотности. Единица оставила бы видимой только
-// самую горячую точку, корень (0.5) вытягивает и совсем редкие следы так, что
-// они заливают полкарты. 0.65 — середина, при которой видно и маршрут, и где
+// contrast — степень сжатия плотности поверх нормировки по перцентилю.
+// Единица оставляет шкалу линейной, меньшие значения вытягивают слабые следы.
+// 0.8 подобрано глазами: маршрут виден, но не спорит по яркости с местом, где
 // человек реально стоял.
 const (
 	radius   = 22
-	contrast = 0.65
+	contrast = 0.8
 )
 
 // Options — что рисовать.
 type Options struct {
 	Path   []dota.Point
 	Deaths []dota.Point
+	Kills  []dota.Point
 	From   int // начало отрезка в секундах
 	To     int // конец, 0 — до конца матча
 	Title  string
@@ -70,16 +72,25 @@ func Render(o Options) ([]byte, error) {
 	canvas := image.NewRGBA(image.Rect(0, 0, Size, Size))
 	draw.Draw(canvas, canvas.Bounds(), base, base.Bounds().Min, draw.Src)
 
-	density, max := heat(o)
-	if max > 0 {
-		overlay(canvas, density, max)
+	density := heat(o)
+	if scale := normalizer(density); scale > 0 {
+		overlay(canvas, density, scale)
+	}
+	// Сначала убийства, потом смерти: если и то и другое случилось в одной
+	// точке, крест должен лежать сверху — своя смерть важнее.
+	for _, k := range o.Kills {
+		if !inWindow(k.T, o.From, o.To) {
+			continue
+		}
+		if x, y, ok := toPixel(k.X, k.Y); ok {
+			skull(canvas, x, y)
+		}
 	}
 	for _, d := range o.Deaths {
 		if !inWindow(d.T, o.From, o.To) {
 			continue
 		}
-		x, y, ok := toPixel(d.X, d.Y)
-		if ok {
+		if x, y, ok := toPixel(d.X, d.Y); ok {
 			cross(canvas, x, y)
 		}
 	}
@@ -115,9 +126,8 @@ func toPixel(x, y float64) (int, int, bool) {
 // Каждая точка пути добавляет колокол вокруг себя: вклад падает от единицы в
 // центре до нуля на границе радиуса. Так соседние точки складываются в одно
 // пятно, а одиночная не превращается в квадрат.
-func heat(o Options) ([]float32, float32) {
+func heat(o Options) []float32 {
 	d := make([]float32, Size*Size)
-	var max float32
 	// Веса колокола считаем один раз: одно и то же ядро кладётся в тысячи мест.
 	kernel := make([]float32, (2*radius+1)*(2*radius+1))
 	for dy := -radius; dy <= radius; dy++ {
@@ -155,13 +165,34 @@ func heat(o Options) ([]float32, float32) {
 					continue
 				}
 				d[row+x] += w
-				if d[row+x] > max {
-					max = d[row+x]
-				}
 			}
 		}
 	}
-	return d, max
+	return d
+}
+
+// normalizer выбирает, какую плотность считать «полной».
+//
+// По максимуму нормировать нельзя: в самой горячей клетке набирается около
+// десятой доли времени, а половина укладывается в дюжину клеток из сотни. При
+// делении на пик всё, кроме одного-двух пятен, уходило в почти прозрачное, и
+// карта выглядела так, будто человек стоял в одной точке.
+//
+// Берём девяносто седьмой перцентиль занятых пикселей: всё, что выше,
+// упирается в красный. Девяностый пробовали — карту заливало целиком, и
+// разница между «стоял» и «прошёл мимо» пропадала.
+func normalizer(d []float32) float32 {
+	nonzero := make([]float32, 0, len(d)/8)
+	for _, v := range d {
+		if v > 0 {
+			nonzero = append(nonzero, v)
+		}
+	}
+	if len(nonzero) == 0 {
+		return 0
+	}
+	sort.Slice(nonzero, func(i, j int) bool { return nonzero[i] < nonzero[j] })
+	return nonzero[len(nonzero)*97/100]
 }
 
 // gradient — цвета тепловой карты от редкого к частому.
@@ -177,10 +208,10 @@ var gradient = []struct {
 	alpha uint8
 }{
 	{0.00, 0, 0, 0, 0},
-	{0.14, 40, 90, 200, 45},
-	{0.32, 40, 180, 170, 105},
-	{0.55, 200, 210, 60, 160},
-	{0.78, 235, 140, 40, 205},
+	{0.06, 50, 100, 210, 90},
+	{0.28, 40, 185, 175, 140},
+	{0.52, 205, 215, 60, 175},
+	{0.76, 235, 140, 40, 210},
 	{1.00, 225, 35, 35, 235},
 }
 
@@ -207,16 +238,17 @@ func colorAt(v float64) color.RGBA {
 	return color.RGBA{}
 }
 
-// overlay накладывает плотность на карту.
-//
-// Значения сжимаются корнем: без него видно только самую горячую точку, а всё
-// остальное сливается в фон — герой почти всё время стоит в двух-трёх местах.
-func overlay(dst *image.RGBA, density []float32, max float32) {
+// overlay накладывает плотность на карту. Всё, что выше выбранного порога,
+// упирается в верх шкалы.
+func overlay(dst *image.RGBA, density []float32, scale float32) {
 	for i, v := range density {
 		if v <= 0 {
 			continue
 		}
-		n := math.Pow(float64(v)/float64(max), contrast)
+		n := math.Pow(float64(v)/float64(scale), contrast)
+		if n > 1 {
+			n = 1
+		}
 		c := colorAt(n)
 		if c.A == 0 {
 			continue
@@ -254,6 +286,29 @@ func cross(dst *image.RGBA, cx, cy int) {
 		for _, w := range []int{0, 1} {
 			put(cx+d, cy+d+w, white)
 			put(cx+d, cy-d+w, white)
+		}
+	}
+}
+
+// skull помечает убитого врага. Кружок, а не крест: крестов на карте и так
+// хватает, а разной формы фигуры различаются даже боковым зрением.
+func skull(dst *image.RGBA, cx, cy int) {
+	const r = 7
+	dark := color.RGBA{20, 20, 20, 210}
+	light := color.RGBA{250, 250, 250, 235}
+	for dy := -r - 2; dy <= r+2; dy++ {
+		for dx := -r - 2; dx <= r+2; dx++ {
+			x, y := cx+dx, cy+dy
+			if x < 0 || x >= Size || y < 0 || y >= Size {
+				continue
+			}
+			d := math.Hypot(float64(dx), float64(dy))
+			switch {
+			case d <= r-2:
+				blend(dst, x, y, light)
+			case d <= r+1:
+				blend(dst, x, y, dark)
+			}
 		}
 	}
 }

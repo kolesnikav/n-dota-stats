@@ -118,6 +118,8 @@ type Snapshot struct {
 	// любой подробности и за любой отрезок, из сетки — только ту же сетку.
 	Path     SnapPath    `json:"path,omitempty"`
 	DeathsAt []SnapPoint `json:"deaths_at,omitempty"`
+	// KillsAt — где игрок убивал вражеских героев.
+	KillsAt []SnapPoint `json:"kills_at,omitempty"`
 
 	// DotaMVP — кого показала сама Dota: лучший и два кандидата. Это ответ, а
 	// не догадка, поэтому в сводке он и идёт вместо нашей тройки.
@@ -156,6 +158,9 @@ func Snap(m *dota.Match, p *dota.Player) Snapshot {
 	snap.Path = packPath(p.Path)
 	for _, d := range p.DeathsAt {
 		snap.DeathsAt = append(snap.DeathsAt, SnapPoint{T: d.T, X: int16(d.X*4 + 0.5), Y: int16(d.Y*4 + 0.5)})
+	}
+	for _, k := range p.KillsAt {
+		snap.KillsAt = append(snap.KillsAt, SnapPoint{T: k.T, X: int16(k.X*4 + 0.5), Y: int16(k.Y*4 + 0.5)})
 	}
 	for _, metric := range MetricsFor(p.Role, p.HeroID, false) {
 		if metric.Needs > m.Detail {

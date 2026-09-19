@@ -133,6 +133,9 @@ type PlayerStats struct {
 	DNT       []int
 	Wards     []Ward
 	Deaths    []Death
+	// Kills — где игрок убивал вражеских героев. Координата берётся у убитого:
+	// место смерти и есть место убийства.
+	Kills []Death
 	// Track — путь героя, Pickups — когда он забирал алтари, лотосы и руны.
 	// Вместе они отвечают на вопрос, во что обошлась ходка за ресурсом.
 	Track   Track
@@ -647,6 +650,16 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 				return nil
 			}
 			ps := res.player(slot)
+			// Тому, кто убил, записываем убийство в той же точке — но только
+			// если убитый из другой команды: добить своего бывает, и заслугой
+			// это не считается.
+			if killer, ok := slots[attacker]; ok && (killer < 128) != (slot < 128) {
+				res.player(killer).Kills = append(res.player(killer).Kills, Death{
+					Slot: killer, Time: tick(),
+					X: heroPos[slot][0], Y: heroPos[slot][1],
+					Zone: int(entry.GetEventLocation()),
+				})
+			}
 			// Координат в записи о смерти нет: поля location_x и location_y
 			// в этом патче не заполняются вовсе. Берём последнюю известную
 			// позицию героя из сущностей — она обновляется в том же потоке и
@@ -688,10 +701,14 @@ func Parse(r io.Reader, m *dota.Match) (*Result, error) {
 		for i := range ps.Deaths {
 			ps.Deaths[i].Time = toSec(ps.Deaths[i].Time)
 		}
+		for i := range ps.Kills {
+			ps.Kills[i].Time = toSec(ps.Kills[i].Time)
+		}
 	}
 	for slot, ps := range res.Players {
 		sort.Slice(ps.Pickups, func(i, j int) bool { return ps.Pickups[i].Time < ps.Pickups[j].Time })
 		sort.Slice(ps.Deaths, func(i, j int) bool { return ps.Deaths[i].Time < ps.Deaths[j].Time })
+		sort.Slice(ps.Kills, func(i, j int) bool { return ps.Kills[i].Time < ps.Kills[j].Time })
 		sort.Slice(ps.Wards, func(i, j int) bool { return ps.Wards[i].Placed < ps.Wards[j].Placed })
 		// Линию считаем здесь, пока голоса ещё в памяти: наружу и в базу
 		// уходит уже готовый ответ.
@@ -883,6 +900,10 @@ func (r *Result) Apply(m *dota.Match) int {
 			p.DeathsAt = make([]dota.Point, 0, len(ps.Deaths))
 			for _, d := range ps.Deaths {
 				p.DeathsAt = append(p.DeathsAt, dota.Point{T: d.Time, X: d.X, Y: d.Y})
+			}
+			p.KillsAt = make([]dota.Point, 0, len(ps.Kills))
+			for _, k := range ps.Kills {
+				p.KillsAt = append(p.KillsAt, dota.Point{T: k.Time, X: k.X, Y: k.Y})
 			}
 			p.WisdomShrines = t.WisdomShrines
 			p.LotusesTaken = t.LotusesTaken
