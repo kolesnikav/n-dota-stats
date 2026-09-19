@@ -9,20 +9,28 @@ import (
 
 const (
 	// tickInterval — как часто просыпается наблюдатель. Реальная частота
-	// опроса каждого игрока считается отдельно, см. pollEvery.
-	tickInterval = 30 * time.Second
+	// опроса каждого игрока считается отдельно, см. pollEvery. Будильник
+	// должен звонить чаще, чем нужен самый частый опрос, иначе минута на
+	// деле превращается в полторы.
+	tickInterval = 20 * time.Second
+
+	// fastPoll — как часто опрашиваем через Steam Web API.
+	//
+	// Минуты хватает и по деньгам, и по смыслу. Ключ даёт 100 000 запросов в
+	// сутки, а один игрок стоит одного запроса в минуту: двое обходятся в
+	// 2 900 запросов, меньше трёх процентов лимита, и запаса хватит примерно
+	// на шестьдесят человек. Делить игроков на «играющих» и «отдыхающих»
+	// больше незачем: именно это деление и задерживало сводку по первому
+	// матчу вечера на десять минут.
+	fastPoll = time.Minute
 
 	// activeWindow — сколько времени после последнего матча игрок считается
-	// играющим. В это окно опрашиваем часто: сводка нужна сразу после игры,
-	// а не через час.
+	// играющим. Осталось для OpenDota: у неё лимит 60 запросов в минуту на
+	// всех, и щадить её приходится.
 	activeWindow = 4 * time.Hour
 
-	activePoll = 90 * time.Second // играет прямо сейчас
-	idlePoll   = 10 * time.Minute // давно не играл
-
-	// У OpenDota лимит 60 запросов в минуту на всех, поэтому с ней опрашиваем
-	// вдвое реже. Steam Web API даёт 100 000 в сутки — там можно чаще.
-	slowSourceFactor = 2
+	slowActivePoll = 3 * time.Minute
+	slowIdlePoll   = 20 * time.Minute
 
 	gcDailyLimit = 80 // запас к сотне заявок, о которой пишет OpenDota
 )
@@ -38,14 +46,13 @@ type SlowSource interface {
 
 // pollEvery — как часто опрашивать этого игрока.
 func (a *App) pollEvery(lastMatch time.Time) time.Duration {
-	every := idlePoll
-	if time.Since(lastMatch) < activeWindow {
-		every = activePoll
-	}
 	if s, ok := a.Source.(SlowSource); ok && s.SlowPolling() {
-		every *= slowSourceFactor
+		if time.Since(lastMatch) < activeWindow {
+			return slowActivePoll
+		}
+		return slowIdlePoll
 	}
-	return every
+	return fastPoll
 }
 
 // watchTick опрашивает пользователей и рассылает сводки по новым матчам.

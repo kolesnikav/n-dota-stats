@@ -21,26 +21,36 @@ func (fastSource) Match(int64) (*dota.Match, []byte, error) { return nil, nil, n
 // OpenDota)», опрос молча замедлился вдвое.
 func TestPollEveryIgnoresSourceName(t *testing.T) {
 	long := time.Now().Add(-24 * time.Hour)
+	recent := time.Now().Add(-10 * time.Minute)
 
 	fast := &App{Source: fastSource{}}
-	if got := fast.pollEvery(long); got != idlePoll {
-		t.Errorf("быстрый источник: интервал %s, ждали %s", got, idlePoll)
+	// Через Steam Web API опрашиваем раз в минуту всех и всегда: делить на
+	// играющих и отдыхающих незачем, запаса ключа хватает с избытком.
+	if got := fast.pollEvery(long); got != fastPoll {
+		t.Errorf("быстрый источник, давно не играл: интервал %s, ждали %s", got, fastPoll)
+	}
+	if got := fast.pollEvery(recent); got != fastPoll {
+		t.Errorf("быстрый источник, играет: интервал %s, ждали %s", got, fastPoll)
 	}
 
 	// Запасной ход не делает источник медленным: основной остался быстрым.
 	withBackup := &App{Source: Fallback{Primary: fastSource{}, Backup: odota.NewSource(odota.New(""))}}
-	if got := withBackup.pollEvery(long); got != idlePoll {
-		t.Errorf("с запасным ходом: интервал %s, ждали %s", got, idlePoll)
+	if got := withBackup.pollEvery(long); got != fastPoll {
+		t.Errorf("с запасным ходом: интервал %s, ждали %s", got, fastPoll)
 	}
 
-	// А вот если основной — сама OpenDota, опрашиваем вдвое реже.
+	// А саму OpenDota щадим: у неё лимит 60 запросов в минуту на всех.
 	slow := &App{Source: odota.NewSource(odota.New(""))}
-	if got := slow.pollEvery(long); got != idlePoll*slowSourceFactor {
-		t.Errorf("медленный источник: интервал %s, ждали %s", got, idlePoll*slowSourceFactor)
+	if got := slow.pollEvery(long); got != slowIdlePoll {
+		t.Errorf("медленный источник, давно не играл: интервал %s, ждали %s", got, slowIdlePoll)
+	}
+	if got := slow.pollEvery(recent); got != slowActivePoll {
+		t.Errorf("медленный источник, играет: интервал %s, ждали %s", got, slowActivePoll)
 	}
 
-	// Пока человек играет, опрашиваем часто.
-	if got := fast.pollEvery(time.Now().Add(-10 * time.Minute)); got != activePoll {
-		t.Errorf("играющий: интервал %s, ждали %s", got, activePoll)
+	// Будильник должен звонить чаще самого частого опроса, иначе минута на
+	// деле превращается в полторы.
+	if tickInterval >= fastPoll {
+		t.Errorf("будильник раз в %s при опросе раз в %s", tickInterval, fastPoll)
 	}
 }

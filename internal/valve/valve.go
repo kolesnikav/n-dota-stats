@@ -59,11 +59,16 @@ func (c *Client) rememberSeq(matchID, seq int64) {
 		return
 	}
 	c.mu.Lock()
+	known := c.seq[matchID] == seq
 	c.seq[matchID] = seq
 	c.mu.Unlock()
-	if c.SeqRemember != nil {
-		c.SeqRemember(matchID, seq)
+	// В базу пишем только новое. При опросе раз в минуту список матчей игрока
+	// почти весь повторяется, и без этой проверки два десятка лишних записей
+	// уходили бы в базу каждую минуту на каждого.
+	if known || c.SeqRemember == nil {
+		return
 	}
+	c.SeqRemember(matchID, seq)
 }
 
 func (c *Client) lookupSeq(matchID int64) (int64, bool) {
