@@ -65,3 +65,7 @@ func (s *Source) Match(matchID int64) (*dota.Match, []byte, error) {
 	}
 	return m, raw, nil
 }
+
+// SlowPolling — у OpenDota лимит 60 запросов в минуту на всех пользователей,
+// поэтому опрашивать её нужно реже, чем Steam Web API.
+func (s *Source) SlowPolling() bool { return true }

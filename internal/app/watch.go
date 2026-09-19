@@ -27,13 +27,22 @@ const (
 	gcDailyLimit = 80 // запас к сотне заявок, о которой пишет OpenDota
 )
 
+// SlowSource — источник, который просит опрашивать себя пореже.
+//
+// Проверять это по имени нельзя: имя — человеческая строка, и когда у
+// источника появился запасной ход, оно перестало совпадать буквально. Опрос
+// тогда молча замедлился вдвое, и сводка приходила на десять минут позже.
+type SlowSource interface {
+	SlowPolling() bool
+}
+
 // pollEvery — как часто опрашивать этого игрока.
 func (a *App) pollEvery(lastMatch time.Time) time.Duration {
 	every := idlePoll
 	if time.Since(lastMatch) < activeWindow {
 		every = activePoll
 	}
-	if a.Source.Name() != "Steam Web API" {
+	if s, ok := a.Source.(SlowSource); ok && s.SlowPolling() {
 		every *= slowSourceFactor
 	}
 	return every

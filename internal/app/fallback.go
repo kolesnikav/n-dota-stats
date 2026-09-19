@@ -41,3 +41,10 @@ func (f Fallback) Match(matchID int64) (*dota.Match, []byte, error) {
 	}
 	return f.Backup.Match(matchID)
 }
+
+// SlowPolling берётся у основного источника: именно его мы опрашиваем, а
+// запасной включается только когда он не справился.
+func (f Fallback) SlowPolling() bool {
+	s, ok := f.Primary.(SlowSource)
+	return ok && s.SlowPolling()
+}
