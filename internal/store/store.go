@@ -167,6 +167,12 @@ func Open(path string) (*DB, error) {
 		// игры. Лежит в метаданных матча, поэтому известен по каждому матчу,
 		// а не только по размеченным вручную.
 		`ALTER TABLE matches ADD COLUMN mvp TEXT`,
+		// Обе оценки по каждому матчу: место игрока у Dota (1..3 или ноль,
+		// если в тройку не попал) и наше — место и балл. Копятся, чтобы
+		// потом было на чём смотреть, куда модель уезжает.
+		`ALTER TABLE match_users ADD COLUMN dota_place INTEGER`,
+		`ALTER TABLE match_users ADD COLUMN our_place INTEGER`,
+		`ALTER TABLE match_users ADD COLUMN our_score REAL`,
 		// Свой корпус перцентилей был ошибкой: медианы и кривые берём у
 		// OpenDota. Таблицы сносим, чтобы не занимать место зря.
 		`DROP TABLE IF EXISTS corpus`,
@@ -1120,6 +1126,47 @@ func (d *DB) AccountMatches(accountID int64) ([]int64, error) {
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SaveEstimates запоминает обе оценки игрока за матч: место по версии Dota и
+// наше место с баллом.
+func (d *DB) SaveEstimates(matchID, accountID int64, dotaPlace, ourPlace int, ourScore float64) error {
+	_, err := d.sql.Exec(
+		`UPDATE match_users SET dota_place=?, our_place=?, our_score=?
+		 WHERE match_id=? AND account_id=?`,
+		dotaPlace, ourPlace, ourScore, matchID, accountID)
+	return err
+}
+
+// Estimate — сохранённые оценки за один матч.
+type Estimate struct {
+	MatchID   int64
+	DotaPlace int
+	OurPlace  int
+	OurScore  float64
+}
+
+// Estimates возвращает накопленные оценки игрока, от старых к свежим.
+func (d *DB) Estimates(accountID int64) ([]Estimate, error) {
+	rows, err := d.sql.Query(
+		`SELECT mu.match_id, COALESCE(mu.dota_place,0), COALESCE(mu.our_place,0),
+		        COALESCE(mu.our_score,0)
+		 FROM match_users mu JOIN matches m ON m.match_id = mu.match_id
+		 WHERE mu.account_id = ? AND mu.our_place IS NOT NULL
+		 ORDER BY m.start_time`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Estimate
+	for rows.Next() {
+		var e Estimate
+		if err := rows.Scan(&e.MatchID, &e.DotaPlace, &e.OurPlace, &e.OurScore); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

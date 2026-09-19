@@ -313,7 +313,7 @@ func (a *App) cmdStats(chatID int64) {
 		_, _ = a.Bot.Send(chatID, "Сначала /start", nil)
 		return
 	}
-	samples := a.samples(u.AccountID)
+	samples := a.Samples(u.AccountID)
 	weights := mvp.EqualWeights()
 	if w, ok := a.DB.Weights(u.AccountID); ok {
 		weights = w
@@ -343,7 +343,7 @@ func (a *App) cmdStats(chatID int64) {
 // Ответ берётся из метаданных матча — тот самый список, который Dota
 // показывает после игры. Раньше приходилось спрашивать человека, и ответов
 // было семь; теперь их столько же, сколько разобранных матчей.
-func (a *App) samples(accountID int64) []mvp.Sample {
+func (a *App) Samples(accountID int64) []mvp.Sample {
 	ids, err := a.DB.AccountMatches(accountID)
 	if err != nil {
 		a.Log("выборка для обучения: %v", err)
@@ -374,13 +374,13 @@ func (a *App) cmdFit(chatID int64) {
 	if !ok {
 		return
 	}
-	samples := a.samples(u.AccountID)
+	samples := a.Samples(u.AccountID)
 	if len(samples) < 5 {
 		_, _ = a.Bot.Send(chatID, fmt.Sprintf(
 			"Пока мало данных: размечено %d матчей, нужно хотя бы 5.", len(samples)), nil)
 		return
 	}
-	weights, ll := mvp.Train(samples, 0.05, 600, 0.5)
+	weights, ll := mvp.Train(samples, mvp.FitL2, mvp.FitSteps, mvp.FitRate)
 	if err := a.DB.SaveWeights(u.AccountID, weights); err != nil {
 		a.Log("сохранение весов: %v", err)
 	}

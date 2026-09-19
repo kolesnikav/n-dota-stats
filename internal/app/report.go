@@ -179,22 +179,31 @@ func (r *Report) body() []string {
 }
 
 func (r *Report) top3() []string {
+	// Ответ игры вытесняет нашу тройку: догадка рядом с фактом только сбивает.
+	// Своя оценка остаётся одной строкой и только для того, кто в тройку не
+	// попал, — иначе она ничего не добавляет.
+	if len(r.Snap.DotaMVP) > 0 {
+		out := []string{"", "<b>ЛУЧШИЕ ПО ВЕРСИИ DOTA</b>"}
+		for i, name := range r.Snap.DotaMVP {
+			row := fmt.Sprintf("%d. %s", i+1, esc(name))
+			if r.Snap.DotaPlace == i+1 {
+				row += " ← ты"
+			}
+			out = append(out, row)
+		}
+		if r.Snap.DotaPlace == 0 && r.Snap.Place > 0 {
+			out = append(out, fmt.Sprintf("Ты — <b>%d-е место</b> из %d по моей оценке · <b>%.0f</b>",
+				r.Snap.Place, r.Snap.Players, r.Snap.Score*100))
+		}
+		return out
+	}
+
+	// Ответа игры нет — такое бывает, пока не разобраны метаданные. Тогда
+	// показываем свою тройку, как раньше.
 	if len(r.Snap.Top) == 0 {
 		return nil
 	}
-	var out []string
-	// Если ответ Dota известен, он идёт первым: это факт, а формула — догадка.
-	if len(r.Snap.DotaMVP) > 0 {
-		out = append(out, "", "<b>ЛУЧШИЙ ПО ВЕРСИИ DOTA</b>")
-		for i, name := range r.Snap.DotaMVP {
-			mark := ""
-			if i == 0 {
-				mark = " ← лучший"
-			}
-			out = append(out, fmt.Sprintf("%d. %s%s", i+1, esc(name), mark))
-		}
-	}
-	out = append(out, "", "<b>ЛУЧШИЕ ПО МОЕЙ ФОРМУЛЕ</b>")
+	out := []string{"", "<b>ЛУЧШИЕ ПО МОЕЙ ОЦЕНКЕ</b>"}
 	for i, t := range r.Snap.Top {
 		mark := ""
 		if t.Me {
@@ -204,11 +213,8 @@ func (r *Report) top3() []string {
 			i+1, esc(t.Name), t.Side, t.Score*100, mark))
 	}
 	if r.Snap.Place > 3 {
-		row := fmt.Sprintf("Ты — <b>%d-е место</b> из %d", r.Snap.Place, r.Snap.Players)
-		// Цифра нужна всегда, а не только когда попал в тройку: по ней видно,
-		// отстал ты на волос или вдвое.
-		row += fmt.Sprintf(" · <b>%.0f</b>", r.Snap.Score*100)
-		out = append(out, row)
+		out = append(out, fmt.Sprintf("Ты — <b>%d-е место</b> из %d · <b>%.0f</b>",
+			r.Snap.Place, r.Snap.Players, r.Snap.Score*100))
 	}
 	return out
 }

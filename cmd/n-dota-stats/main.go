@@ -16,6 +16,7 @@ import (
 	"github.com/kolesnikav/n-dota-stats/internal/dota"
 	"github.com/kolesnikav/n-dota-stats/internal/gc"
 	"github.com/kolesnikav/n-dota-stats/internal/meta"
+	"github.com/kolesnikav/n-dota-stats/internal/mvp"
 	"github.com/kolesnikav/n-dota-stats/internal/odota"
 	"github.com/kolesnikav/n-dota-stats/internal/replay"
 	"github.com/kolesnikav/n-dota-stats/internal/store"
@@ -35,6 +36,7 @@ func main() {
 		audit    = flag.Bool("audit", false, "проверить качество показателей по истории и выйти")
 		reparse  = flag.Int("reparse", 0, "попросить разобрать реплеи матчей за N дней и перечитать их")
 		gcTest   = flag.Int64("gc-test", 0, "проверить цепочку: ключ реплея, метаданные, разбор — и выйти")
+		refit    = flag.Bool("fit", false, "пересчитать веса формулы по всей истории и сохранить")
 		relink   = flag.Bool("relink", false, "связать пользователей со всеми их матчами в базе и выйти")
 		resnap   = flag.Bool("snapshots", false, "пересчитать сводки всех матчей и выйти")
 		medians  = flag.Bool("medians", false, "пересчитать медианы ролей по OpenDota и выйти")
@@ -171,6 +173,14 @@ func main() {
 		fmt.Println()
 		fmt.Println(strip(res.Text()))
 		fmt.Printf("заняло: %s\n", res.Elapsed.Round(time.Second))
+		return
+	}
+
+	if *refit {
+		if err := refitAll(db, source, od); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -561,6 +571,43 @@ func relinkUsers(db *store.DB, source app.MatchSource, od *odota.Client) error {
 		}
 		fmt.Printf("  %-16s аккаунт %-12d добавлено связей: %d · всего матчей: %d\n",
 			u.Nickname, u.AccountID, added, db.MatchCount(u.AccountID))
+	}
+	return nil
+}
+
+// refitAll пересчитывает веса каждому пользователю по всей его истории.
+//
+// Учимся на ответе самой игры, поэтому размеченных матчей столько же, сколько
+// разобранных. Половина откладывается на проверку: точность, посчитанная на
+// тех же матчах, на которых училась, всегда выглядит лучше, чем есть.
+func refitAll(db *store.DB, source app.MatchSource, od *odota.Client) error {
+	users, err := db.Users()
+	if err != nil {
+		return err
+	}
+	a := app.New(db, nil, source, od)
+	for _, u := range users {
+		if u.AccountID == 0 {
+			continue
+		}
+		samples := a.Samples(u.AccountID)
+		if len(samples) < 20 {
+			fmt.Printf("%-16s матчей с ответом игры: %d — мало для обучения\n", u.Nickname, len(samples))
+			continue
+		}
+		half := len(samples) / 2
+		check, _ := mvp.Train(samples[:half], mvp.FitL2, mvp.FitSteps, mvp.FitRate)
+		t1, t3, n := mvp.Accuracy(samples[half:], check)
+
+		weights, ll := mvp.Train(samples, mvp.FitL2, mvp.FitSteps, mvp.FitRate)
+		if err := db.SaveWeights(u.AccountID, weights); err != nil {
+			return err
+		}
+		fmt.Printf("%-16s матчей %3d · на отложенной половине: лучший угадан %d%%, в тройке %d%% · правдоподобие %.3f\n",
+			u.Nickname, len(samples), 100*t1/n, 100*t3/n, ll)
+		for _, w := range mvp.Describe(weights) {
+			fmt.Printf("     %-34s %+6.2f  %+5.1f%%\n", w.Label, w.Raw, w.Share)
+		}
 	}
 	return nil
 }

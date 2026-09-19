@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kolesnikav/n-dota-stats/internal/analysis"
 )
 
 // Время матча читается словами для близких дат и цифрами для дальних.
@@ -34,5 +36,46 @@ func TestMatchTime(t *testing.T) {
 
 	if got := matchTime(0); got != "" {
 		t.Errorf("без времени ждали пустую строку, получили %q", got)
+	}
+}
+
+// В сводке показывается тройка Dota. Своя оценка — только для того, кто в неё
+// не попал: рядом с фактом догадка лишняя.
+func TestTop3ShowsDotaAnswer(t *testing.T) {
+	base := analysis.Snapshot{
+		DotaMVP: []string{"Anti-Mage", "Mirana", "Phantom Assassin"},
+		Place:   9, Players: 10, Score: 0.27,
+		Top: []analysis.SnapTop{{Name: "Кто-то"}},
+	}
+
+	// Игрока в тройке нет — показываем его место по нашей оценке.
+	out := strings.Join((&Report{Snap: base}).top3(), "\n")
+	if !strings.Contains(out, "ЛУЧШИЕ ПО ВЕРСИИ DOTA") {
+		t.Error("нет раздела с ответом игры")
+	}
+	if strings.Contains(out, "МОЕЙ ОЦЕНКЕ") {
+		t.Error("своя тройка показана рядом с ответом игры")
+	}
+	if !strings.Contains(out, "9-е место") {
+		t.Errorf("нет своей оценки места:\n%s", out)
+	}
+
+	// Игрок в тройке — своя оценка не нужна, достаточно пометки.
+	inside := base
+	inside.DotaPlace = 2
+	out = strings.Join((&Report{Snap: inside}).top3(), "\n")
+	if !strings.Contains(out, "Mirana ← ты") {
+		t.Errorf("не помечено место игрока:\n%s", out)
+	}
+	if strings.Contains(out, "по моей оценке") {
+		t.Error("своя оценка показана, хотя игрок и так в тройке")
+	}
+
+	// Ответа игры нет — показываем свою тройку, как раньше.
+	noAnswer := base
+	noAnswer.DotaMVP = nil
+	out = strings.Join((&Report{Snap: noAnswer}).top3(), "\n")
+	if !strings.Contains(out, "ЛУЧШИЕ ПО МОЕЙ ОЦЕНКЕ") {
+		t.Errorf("без ответа игры нет своей тройки:\n%s", out)
 	}
 }

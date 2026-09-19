@@ -120,8 +120,11 @@ type Snapshot struct {
 	DeathsAt []SnapPoint `json:"deaths_at,omitempty"`
 
 	// DotaMVP — кого показала сама Dota: лучший и два кандидата. Это ответ, а
-	// не догадка, поэтому он и в снимке, и в сводке идёт впереди формулы.
+	// не догадка, поэтому в сводке он и идёт вместо нашей тройки.
 	DotaMVP []string `json:"dota_mvp,omitempty"`
+	// DotaPlace — какое место у самого игрока в этой тройке, ноль если он в
+	// неё не попал. Тогда показываем свою оценку.
+	DotaPlace int `json:"dota_place,omitempty"`
 
 	Top     []SnapTop `json:"top,omitempty"`
 	Place   int       `json:"place,omitempty"`
@@ -140,9 +143,14 @@ func Snap(m *dota.Match, p *dota.Player) Snapshot {
 		RoleManual: p.RoleSource == dota.SourceManual,
 		Partial:    m.Detail < dota.DetailMeta,
 	}
-	for _, slot := range m.MVP {
-		if best := m.FindBySlot(slot); best != nil {
-			snap.DotaMVP = append(snap.DotaMVP, best.Name())
+	for i, slot := range m.MVP {
+		best := m.FindBySlot(slot)
+		if best == nil {
+			continue
+		}
+		snap.DotaMVP = append(snap.DotaMVP, best.Name())
+		if slot == p.Slot {
+			snap.DotaPlace = i + 1
 		}
 	}
 	snap.Path = packPath(p.Path)

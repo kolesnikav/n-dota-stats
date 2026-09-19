@@ -123,6 +123,12 @@ func (a *App) Report(chatID, accountID, matchID int64) (*Report, error) {
 		}
 		predicted = append(predicted, s.Player.Slot)
 	}
+	// Обе оценки складываем рядом: потом по ним будет видно, как модель
+	// расходится с игрой и в какую сторону.
+	if err := a.DB.SaveEstimates(matchID, accountID,
+		rep.Snap.DotaPlace, rep.Snap.Place, rep.Snap.Score); err != nil {
+		a.Log("оценки матча %d: %v", matchID, err)
+	}
 	blob, err := json.Marshal(rep.Snap)
 	if err != nil {
 		a.Log("снимок матча %d: %v", matchID, err)
